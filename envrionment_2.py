@@ -17,8 +17,8 @@ class SimpleCompressorEnv(gym.Env):
         # 1. 定义动作空间 Action Space: 压缩机排气比 alpha (连续值，范围 1.0 到 2.0)
         self.action_space = spaces.Box(low=1.0, high=2.0, shape=(1,), dtype=np.float32)
         
-        # 2. 定义状态空间 Observation Space: 节点2的用户需求量 Q_demand (归一化到 [-1, 1])
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        # 2. 定义状态空间 Observation Space: 用户需求量 (归一化) 和 电价状态 (0或1)
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         
         # 物理常量
         self.p0_ref = 100.0  # 气源初始压力 (bar)
@@ -31,11 +31,17 @@ class SimpleCompressorEnv(gym.Env):
         """每回合开始，随机生成一个新的用气需求"""
         super().reset(seed=seed)
         # 随机生成用户需求: 100 到 300 m3/h 之间
-        self.current_demand = np.random.uniform(100.0, 300.0)
+        self.current_demand = self.np_random.uniform(100.0, 300.0)
         
-        # 将需求量归一化后传给 Agent 作为当前状态 S
+       # 随机生成一个电价状态: 0代表谷电(便宜, 0.3元), 1代表峰电(贵, 1.2元)
+        self.price_state = np.random.choice([0.0, 1.0]) 
+        self.current_price = 0.3 if self.price_state == 0.0 else 1.2
+    
+        # 归一化需求量
         normalized_demand = (self.current_demand - 200.0) / 100.0
-        return np.array([normalized_demand], dtype=np.float32), {}
+    
+        # 返回组装好的状态数组
+        return np.array([normalized_demand, self.price_state], dtype=np.float32), {}
 
     def step(self, action):
         """Agent 下达控制指令后，环境的物理反馈"""
@@ -59,7 +65,7 @@ class SimpleCompressorEnv(gym.Env):
         power_consumption = self.current_demand * (alpha - 1.0)
         
         # --- RDPO 奖励导向策略优化 ---
-        reward = -power_consumption  # 目标是最小化能耗，所以奖励是能耗的负数
+        reward = -(power_consumption * self.current_price) # 目标是最小化电费
         irr = 0 # 违规次数
         
         # 检查是否触碰物理红线 (例如：输送到用户的压力低于 40 bar)
@@ -72,7 +78,7 @@ class SimpleCompressorEnv(gym.Env):
         truncated = False
         
         # 构造下一个状态 (在这里不需要，因为回合已结束)
-        next_state = np.array([(self.current_demand - 200.0) / 100.0], dtype=np.float32)
+        next_state = np.array([(self.current_demand - 200.0) / 100.0, self.price_state], dtype=np.float32)
         
         info = {
             "p1": p1,
