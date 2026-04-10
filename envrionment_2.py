@@ -127,3 +127,63 @@ if __name__ == "__main__":
     else:
         print(f"安全状态: 安全运行。")
         print(f"💰 最终得分: {reward:.2f} ")
+
+
+    hours = np.arange(24)
+
+    # 模拟城市 24 小时用气需求曲线 (夜间低谷，白天高峰，傍晚晚高峰)
+    demand_curve = np.array([
+        120, 110, 110, 115, 120, 130, 150, 180, # 00:00 - 07:00
+        220, 250, 260, 250, 240, 240, 250, 260, # 08:00 - 15:00
+        270, 280, 280, 260, 220, 180, 150, 130  # 16:00 - 23:00
+    ])
+
+    # 模拟分时电价状态 (0: 谷电 0.3元, 1: 峰电 1.2元)
+    # 设定: 22:00 - 07:00 为谷电，08:00 - 21:00 为峰电
+    price_states = np.array([
+        0, 0, 0, 0, 0, 0, 0, 0,  # 00:00 - 07:00 谷电
+        1, 1, 1, 1, 1, 1, 1, 1,  # 08:00 - 15:00 峰电
+        1, 1, 1, 1, 1, 1, 0, 0   # 16:00 - 23:00 峰/谷交替
+    ])
+
+    recorded_actions = []
+    recorded_powers = []
+    recorded_costs = []
+    recorded_p2 = []
+
+    actual_prices = np.where(price_states == 0, 0.3, 1.2)
+
+    print("\n 执行 24 小时动态调度测试")
+
+    for i in range(24):
+        # 提取当前小时的环境条件
+        current_demand = demand_curve[i]
+        current_price_state = price_states[i]
+        current_price_val = actual_prices[i]
+        
+        # 强制覆盖环境的当前状态 
+        env.current_demand = current_demand
+        env.price_state = current_price_state
+        env.current_price = current_price_val
+        
+        # 构造喂给 AI 的观测向量 
+        obs = np.array([(current_demand - 200.0) / 100.0, current_price_state], dtype=np.float32)
+        
+        # AI 输出决策 
+        action, _ = model.predict(obs, deterministic=True)
+        
+        # 执行决策，获取物理反馈
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        
+        # 记录数据
+        recorded_actions.append(action[0])
+        recorded_powers.append(info['power'])
+        recorded_costs.append(info['power'] * current_price_val)
+        recorded_p2.append(info['p2'])
+
+        total_power = sum(recorded_powers)
+        total_cost = sum(recorded_costs)
+        print(f"\n📝 24 小时运行总结报告:")
+        print(f"-> 全天总耗电量: {total_power:.2f} kWh")
+        print(f"-> 全天总运行成本: ¥ {total_cost:.2f}")
+        print(f"-> 越限次数: {sum(1 for p in recorded_p2 if p < env.p_min_safe)} 次 (预期应为 0)")
