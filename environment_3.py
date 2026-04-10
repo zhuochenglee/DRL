@@ -220,4 +220,5 @@ if __name__ == "__main__":
     print(f"\n24 小时运行总结报告:")
     print(f"-> 全天总耗电量: {total_power:.2f} kWh")
     print(f"-> 全天总运行成本: ¥ {total_cost:.2f}")
-    print(f"-> 越限次数: {violation_count} 次 (预期应为 0)")
+    print(f"-> 越限次数: {violation_count} 次 ")
+    print("我爱段雨婷")
