@@ -16,7 +16,7 @@ else:
 print(f" 训练设备: {DEVICE}")
 
 N_TEST_SCENARIOS = 10
-RL_TRAINING_STEPS = 20000
+RL_TRAINING_STEPS = 100000
 SENSITIVITY_MODE = False  # True: 扫描多个 C 值做敏感性分析; False: 仅运行基准 C=[0.05,0.05]
 
 # 历史经验范围 (规则调度使用，不依赖当前场景的未来信息)
@@ -331,7 +331,7 @@ if __name__ == "__main__":
         print("=" * 85)
     else:
         print("=" * 75)
-        print("   公平对比实验: 规则调度 vs 遗传算法 vs 动态规划 vs 强化学习 (SAC)")
+        print("   对比实验: 规则调度 vs 遗传算法 vs 动态规划 vs 强化学习 (SAC)")
         print("=" * 75)
 
     # 1. 生成测试场景 (所有 C 值共用同一组场景)
