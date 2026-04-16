@@ -8,14 +8,16 @@ import time
 
 class TopologicalDynamicEnv(gym.Env):
 
-    def __init__(self):
+    def __init__(self, noise_scale=0.0, C=None):
         super(TopologicalDynamicEnv, self).__init__()
+        
+        self.noise_scale = noise_scale
         
         # 动作空间: 压缩机排气比 alpha，动作在节点 1 上面
         self.action_space = spaces.Box(low=1.0, high=2.0, shape=(1,), dtype=np.float32)
         
-        # 状态空间: [用户需求, 电价状态, 节点2管存, 节点3管存] 
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
+        # 状态空间: [当前需求, 电价状态, 节点2管存, 节点3管存, sin(hour), cos(hour), 24h电价序列...] 
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(30,), dtype=np.float32)
         
       
         # 关联矩阵 A: 3*2  节点*管道
@@ -30,7 +32,7 @@ class TopologicalDynamicEnv(gym.Env):
         self.A_internal = self.A[1:3, :]  # shape (2, 2)
         
         self.K = np.array([0.02, 0.05]) # 管道 1, 2 的阻力系数
-        self.C = np.array([0.05, 0.05]) # 节点 2, 3 的管存容积弹性系数
+        self.C = np.array(C, dtype=np.float64) if C is not None else np.array([0.05, 0.05]) # 节点 2, 3 的管存容积弹性系数
         self.p0_ref = 100.0
         self.p_min_safe = 80.0
         self.p_max_safe = 150.0
@@ -50,28 +52,51 @@ class TopologicalDynamicEnv(gym.Env):
             1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2,
             1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 0.3, 0.3
         ])
+        
+        # 当前回合工况数据 (可被 noise 或 reset options 覆盖)
+        self._episode_demand = self.demand_series.astype(np.float64)
+        self._episode_prices = self.actual_prices.astype(np.float64)
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.current_hour = 0
-        # 重置所有内部节点的管存压力
-        self.P_internal = np.array([100.0, 100.0]) 
+        self.P_internal = np.array([100.0, 100.0])
+        
+        if options and "demand" in options and "prices" in options:
+            self._episode_demand = np.array(options["demand"], dtype=np.float64)
+            self._episode_prices = np.array(options["prices"], dtype=np.float64)
+        elif self.noise_scale > 0:
+            noise = self.np_random.normal(0, self.noise_scale, size=24)
+            self._episode_demand = np.clip(self.demand_series * (1.0 + noise), 50, 400)
+            shift = int(self.np_random.integers(-2, 3))
+            self._episode_prices = np.roll(self.actual_prices, shift)
+        else:
+            self._episode_demand = self.demand_series.astype(np.float64)
+            self._episode_prices = self.actual_prices.astype(np.float64)
+        
         return self._get_obs(), {}
     
     def _get_obs(self):
-        demand = self.demand_series[self.current_hour % 24]
-        price_state = 1.0 if self.actual_prices[self.current_hour % 24] > 0.5 else 0.0
+        hour = self.current_hour % 24
+        demand = self._episode_demand[hour]
+        price_state = 1.0 if self._episode_prices[hour] > 0.5 else 0.0
         
         norm_demand = (demand - 200.0) / 100.0
         norm_p2 = (self.P_internal[0] - 105.0) / 95.0
         norm_p3 = (self.P_internal[1] - 105.0) / 95.0
         
-        return np.array([norm_demand, price_state, norm_p2, norm_p3], dtype=np.float32)
+        t = 2.0 * np.pi * hour / 24.0
+        
+        # 完整 24h 电价序列 (已知信息)，归一化到 [-1, 1]
+        norm_prices = np.where(self._episode_prices > 0.5, 1.0, -1.0).astype(np.float32)
+        
+        base = np.array([norm_demand, price_state, norm_p2, norm_p3, np.sin(t), np.cos(t)], dtype=np.float32)
+        return np.concatenate([base, norm_prices])
 
     def step(self, action):
         alpha = action[0]
-        demand = self.demand_series[self.current_hour]
-        price = self.actual_prices[self.current_hour]
+        demand = self._episode_demand[self.current_hour]
+        price = self._episode_prices[self.current_hour]
        
         # 1. 设置气源节点压力向量 (压缩机做功后)
         P_source = np.array([self.p0_ref * alpha])
@@ -221,4 +246,3 @@ if __name__ == "__main__":
     print(f"-> 全天总耗电量: {total_power:.2f} kWh")
     print(f"-> 全天总运行成本: ¥ {total_cost:.2f}")
     print(f"-> 越限次数: {violation_count} 次 ")
-    print("我爱段雨婷")
