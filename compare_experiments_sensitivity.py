@@ -16,8 +16,7 @@ else:
 print(f" 训练设备: {DEVICE}")
 
 N_TEST_SCENARIOS = 10
-RL_TRAINING_STEPS = 20000
-SENSITIVITY_MODE = False  # True: 扫描多个 C 值做敏感性分析; False: 仅运行基准 C=[0.05,0.05]
+RL_TRAINING_STEPS = 200000
 
 # 历史经验范围 (规则调度使用，不依赖当前场景的未来信息)
 HIST_DEMAND_MIN = 110.0
@@ -313,26 +312,16 @@ def print_episode_table(result):
 # ==========================================
 if __name__ == "__main__":
     # 管存容积敏感性测试: 扫描不同 C 值
-    if SENSITIVITY_MODE:
-        C_VALUES = [
-            ([0.02, 0.02], "小容积 (0.02)"),
-            ([0.05, 0.05], "基准容积 (0.05)"),
-            ([0.10, 0.10], "大容积 (0.10)"),
-            ([0.15, 0.15], "超大容积 (0.15)"),
-        ]
-    else:
-        C_VALUES = [
-            ([0.05, 0.05], "基准容积 (0.05)"),
-        ]
+    C_SENSITIVITY_VALUES = [
+        ([0.02, 0.02], "小容积 (0.02)"),
+        ([0.05, 0.05], "基准容积 (0.05)"),
+        ([0.10, 0.10], "大容积 (0.10)"),
+        ([0.15, 0.15], "超大容积 (0.15)"),
+    ]
 
-    if SENSITIVITY_MODE:
-        print("=" * 85)
-        print("   管存容积敏感性测试: 规则调度 vs 遗传算法 vs 动态规划 vs 强化学习 (SAC)")
-        print("=" * 85)
-    else:
-        print("=" * 75)
-        print("   公平对比实验: 规则调度 vs 遗传算法 vs 动态规划 vs 强化学习 (SAC)")
-        print("=" * 75)
+    print("=" * 85)
+    print("   管存容积敏感性测试: 规则调度 vs 遗传算法 vs 动态规划 vs 强化学习 (SAC)")
+    print("=" * 85)
 
     # 1. 生成测试场景 (所有 C 值共用同一组场景)
     print(f"\n 生成 {N_TEST_SCENARIOS} 个随机测试场景...")
@@ -340,7 +329,7 @@ if __name__ == "__main__":
 
     sensitivity_summary = []
 
-    for c_val, c_label in C_VALUES:
+    for c_val, c_label in C_SENSITIVITY_VALUES:
         print(f"\n{'=' * 85}")
         print(f"   测试管存容积 C = {c_val}  ({c_label})")
         print(f"{'=' * 85}")
@@ -432,31 +421,30 @@ if __name__ == "__main__":
         })
 
     # ==========================================
-    # 敏感性汇总表 (仅在 SENSITIVITY_MODE 时输出)
+    # 敏感性汇总表
     # ==========================================
-    if SENSITIVITY_MODE:
-        print("\n" + "=" * 100)
-        print("   管存容积敏感性测试汇总 (平均成本 / 平均越限)")
-        print("=" * 100)
-        print(f"\n{'容积系数':<20} | {'规则调度':<18} | {'遗传算法':<18} | {'动态规划':<18} | {'强化学习':<18}")
-        print("-" * 100)
-        for s in sensitivity_summary:
-            print(
-                f"{s['c_label']:<16} | "
-                f"¥{s['rule']['cost']:>7.2f} ({s['rule']['viol']:.1f}违) | "
-                f"¥{s['ga']['cost']:>7.2f} ({s['ga']['viol']:.1f}违) | "
-                f"¥{s['dp']['cost']:>7.2f} ({s['dp']['viol']:.1f}违) | "
-                f"¥{s['rl']['cost']:>7.2f} ({s['rl']['viol']:.1f}违)"
-            )
-        print("-" * 100)
+    print("\n" + "=" * 100)
+    print("   管存容积敏感性测试汇总 (平均成本 / 平均越限)")
+    print("=" * 100)
+    print(f"\n{'容积系数':<20} | {'规则调度':<18} | {'遗传算法':<18} | {'动态规划':<18} | {'强化学习':<18}")
+    print("-" * 100)
+    for s in sensitivity_summary:
+        print(
+            f"{s['c_label']:<16} | "
+            f"¥{s['rule']['cost']:>7.2f} ({s['rule']['viol']:.1f}违) | "
+            f"¥{s['ga']['cost']:>7.2f} ({s['ga']['viol']:.1f}违) | "
+            f"¥{s['dp']['cost']:>7.2f} ({s['dp']['viol']:.1f}违) | "
+            f"¥{s['rl']['cost']:>7.2f} ({s['rl']['viol']:.1f}违)"
+        )
+    print("-" * 100)
 
-        # 各方法随 C 变化的成本趋势
-        print(f"\n管存容积对各方法成本的影响:")
-        for method, label in [("rule", "规则调度"), ("ga", "遗传算法"), ("dp", "动态规划"), ("rl", "强化学习")]:
-            costs = [s[method]["cost"] for s in sensitivity_summary]
-            labels = [s["c_label"] for s in sensitivity_summary]
-            trend = "  |  ".join(f"{l}: ¥{c:.2f}" for l, c in zip(labels, costs))
-            print(f"  {label}: {trend}")
+    # 各方法随 C 变化的成本趋势
+    print(f"\n管存容积对各方法成本的影响:")
+    for method, label in [("rule", "规则调度"), ("ga", "遗传算法"), ("dp", "动态规划"), ("rl", "强化学习")]:
+        costs = [s[method]["cost"] for s in sensitivity_summary]
+        labels = [s["c_label"] for s in sensitivity_summary]
+        trend = "  |  ".join(f"{l}: ¥{c:.2f}" for l, c in zip(labels, costs))
+        print(f"  {label}: {trend}")
 
     print(f"\n信息结构: 所有方法均知晓完整24h电价序列，但只能看到当前时刻的实际需求")
     print(f"  GA/DP 使用历史基准需求做离线规划，执行时面对实际(含噪声)需求")
