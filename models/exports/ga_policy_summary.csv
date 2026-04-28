@@ -1,0 +1,2 @@
+policy,total_reward,annual_renewable_share,total_station_power_10k_kwh,total_grid_cost_10k_yuan,total_startup_shutdown_cost_10k_yuan,total_operating_cost_10k_yuan,total_penalty,training_time_s,avg_inference_time_ms,max_inference_time_ms
+ga_policy,-1992.4624881386235,0.737992620442111,3167.4268049399025,348.5534627835633,1.86,350.4134627835633,375.90683208366045,14.67251706123352,0.028789517808267644,0.043249999999162014
