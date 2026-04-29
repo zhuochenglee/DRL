@@ -1,4 +1,3 @@
-import csv
 import time
 from copy import deepcopy
 from importlib import import_module
@@ -10,8 +9,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 from stable_baselines3 import PPO, SAC, TD3
-from stable_baselines3.common.callbacks import BaseCallback, CallbackList, EvalCallback
-from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.callbacks import BaseCallback
 
 SummaryWriter = import_module("tensorboardX").SummaryWriter
 
@@ -40,7 +38,6 @@ TRAIN_LEARNING_RATE = 1e-4
 EVAL_FREQ = 5000
 EVAL_EPISODES = 3
 MODEL_DIR = Path("models")
-EXPORT_DIR = MODEL_DIR / "exports"
 TENSORBOARD_DIR = MODEL_DIR / "tensorboard"
 GA_POP_SIZE = 24
 GA_GENERATIONS = 20
@@ -69,6 +66,26 @@ MPC_CANDIDATE_LIBRARY = (
     (0.02, 0.02, 0.72, 0.84, -0.02),
     (-0.12, -0.04, 0.80, 0.70, 0.05),
 )
+
+EVAL_TENSORBOARD_TAGS = {
+    "reward": "reward/total",
+    "green_ratio": "renewable/annual_share",
+    "total_power_10k_kwh": "power/total_10k_kwh",
+    "grid_cost_10k_yuan": "cost/grid_10k_yuan",
+    "startup_cost_10k_yuan": "cost/startup_shutdown_10k_yuan",
+    "total_cost_10k_yuan": "cost/operating_10k_yuan",
+    "penalty": "penalty/total",
+}
+
+COMPARISON_TENSORBOARD_TAGS = {
+    "total_reward": "reward/total",
+    "total_operating_cost_10k_yuan": "cost/operating_10k_yuan",
+    "total_power_10k_kwh": "power/total_10k_kwh",
+    "annual_renewable_share": "renewable/annual_share",
+    "total_penalty": "penalty/total",
+    "training_time_s": "time/train_s",
+    "avg_inference_time_ms": "time/inference_avg_ms",
+}
 
 PHASE_EXTRACTION = -1
 PHASE_BALANCE = 0
@@ -138,6 +155,7 @@ def build_annual_profiles():
     baseline_pressure = np.zeros(TOTAL_DAYS, dtype=np.float64)
     baseline_rate = np.zeros(TOTAL_DAYS, dtype=np.float64)
 
+    # 将全年拼接为“采气-平衡-注气-平衡-采气”的年度运行日历。
     extraction_slices = [(0, 74), (319, 365)]
     extraction_cursor = 0
     for start, end in extraction_slices:
@@ -201,11 +219,13 @@ class CompetitionSchedulingEnv(gym.Env):
 
     def __init__(self):
         super().__init__()
+        # 动作依次表示：调度偏移、4500kW 压缩机负荷、4000kW 压缩机负荷、绿电请求比例。
         self.action_space = spaces.Box(
             low=np.array([-1.0, 0.0, 0.0, 0.0], dtype=np.float32),
             high=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32),
             dtype=np.float32,
         )
+        # 观测同时包含阶段、库存目标、绿电条件以及上一时刻运行状态。
         self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(16,), dtype=np.float32)
 
         self.phase = ANNUAL_PROFILES["phase"]
@@ -326,6 +346,7 @@ class CompetitionSchedulingEnv(gym.Env):
         if phase == PHASE_BALANCE or total_rate <= 1e-9:
             return np.zeros(len(WELL_NAMES), dtype=np.float64), 0.0, 0.0
 
+        # 给各井加入轻微季节扰动，避免全年都保持完全对称的分配模式。
         seasonal_phase = 2.0 * np.pi * self.current_day / TOTAL_DAYS
         well_shape = 1.0 + 0.06 * np.sin(seasonal_phase + np.array([0.0, 0.8, 1.6, 2.4]))
 
@@ -371,6 +392,7 @@ class CompetitionSchedulingEnv(gym.Env):
         _, line_loss, _ = self._allocate_wells(desired_rate, phase)
         required_work = self._estimate_required_work(phase, desired_rate, baseline_pressure, line_loss)
 
+        # 强化学习只看到当前运行点和当天基线任务，不直接看到未来信息。
         obs = np.array([
             float(phase),
             2.0 * phase_day / max(EXTRACTION_DAYS, INJECTION_DAYS) - 1.0,
@@ -392,6 +414,7 @@ class CompetitionSchedulingEnv(gym.Env):
         return np.clip(obs, -1.0, 1.0)
 
     def step(self, action):
+        # 策略输出的是高层调度意图，环境内部再把它落到设备和工艺约束上。
         dispatch_adjustment = float(np.clip(action[0], -1.0, 1.0))
         requested_compressor_loads = np.clip(np.asarray(action[1:3], dtype=np.float64), 0.0, 1.0)
         renewable_request = float(np.clip(action[3], 0.0, 1.0))
@@ -422,6 +445,7 @@ class CompetitionSchedulingEnv(gym.Env):
         if required_work_kwh > 1e-9:
             compressor_feasibility = float(min(delivered_work_kwh / required_work_kwh, 1.0))
 
+        # 实际流量同时受井口能力和压缩机可提供功的共同限制。
         actual_rate = well_limited_rate * compressor_feasibility
         well_rates = well_requested_rates * compressor_feasibility
         compressor_shortfall_ratio = 1.0 - compressor_feasibility
@@ -463,6 +487,7 @@ class CompetitionSchedulingEnv(gym.Env):
         if phase == PHASE_EXTRACTION and renewable_share < MIN_RENEWABLE_SHARE:
             renewable_penalty = 80.0 * (MIN_RENEWABLE_SHARE - renewable_share)
 
+        # 约束违背项在奖励中占主导，用来优先压制不安全或不稳定的调度。
         penalty = (
             6.0 * pressure_gap
             + 50.0 * inventory_gap
@@ -474,6 +499,7 @@ class CompetitionSchedulingEnv(gym.Env):
             + renewable_penalty
         )
 
+        # 奖励由绿电收益、能耗成本、电网依赖和各类惩罚共同构成。
         energy_term = power_kwh / 12000.0
         grid_term = grid_power_kwh / 10000.0 + startup_shutdown_cost_yuan / 4000.0
         green_bonus = 7.0 * renewable_share
@@ -494,6 +520,7 @@ class CompetitionSchedulingEnv(gym.Env):
 
         terminal_penalty = 0.0
         if terminated:
+            # 年度绿电占比只在全年结束后统一结算一次。
             annual_share = self.annual_renewable_share()
             if annual_share < MIN_RENEWABLE_SHARE:
                 annual_gap = MIN_RENEWABLE_SHARE - annual_share
@@ -574,6 +601,7 @@ class CompetitionSchedulingEnv(gym.Env):
 
 
 def rule_policy_components(env):
+    # 规则基线先决定调度方向和绿电偏好，再映射到具体设备动作。
     phase = env.phase[env.current_day]
     renewable = float(env.renewable_availability[env.current_day])
     inventory_gap = env.inventory - env.target_inventory[env.current_day]
@@ -625,6 +653,7 @@ def build_compressor_loads(required_input, shared_load_target=0.78, compressor_b
 
 
 def action_from_controls(env, dispatch, renewable_request, compressor_margin=0.72, shared_load_target=0.78, compressor_bias=0.0):
+    # 将高层控制量转换为满足设备约束的 4 维环境动作。
     phase = env.phase[env.current_day]
     baseline_rate = env.baseline_rate[env.current_day]
     baseline_pressure = env.baseline_pressure[env.current_day]
@@ -658,8 +687,7 @@ def rule_policy(env):
 def mild_rule_policy(env):
     base_action = rule_policy(env).astype(np.float64)
 
-    # Transparent comparison baseline: slightly weaker than the tuned rule policy,
-    # while preserving the same control structure.
+    # 这个基线故意比正式规则略弱，但保持完全相同的控制结构，方便透明比较。
     base_action[0] *= 0.82
     base_action[2] = np.clip(base_action[2] + 0.06, 0.0, 1.0)
     base_action[3] = np.clip(base_action[3] - 0.03, 0.0, 1.0)
@@ -668,6 +696,7 @@ def mild_rule_policy(env):
 
 
 def run_policy_episode(env, policy_fn):
+    # 所有规则法、搜索法和学习法都通过同一条 rollout 路径评估，保证统计一致。
     env.reset()
     total_reward = 0.0
     total_inference_time_s = 0.0
@@ -729,12 +758,6 @@ def make_rl_policy(model):
         return action
 
     return policy
-
-
-def _to_python_value(value):
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
 
 
 def evaluate_model_metrics(model, episodes=EVAL_EPISODES):
@@ -803,6 +826,7 @@ def _ga_tournament_select(population, fitness, rng):
 
 
 def train_ga_policy(pop_size=GA_POP_SIZE, generations=GA_GENERATIONS, seed=42):
+    # GA 只搜索少量规则参数，而不是直接搜索全年逐日动作序列。
     tensorboard = create_tensorboard_writer(
         "ga",
         run_suffix="ga_1",
@@ -839,9 +863,9 @@ def train_ga_policy(pop_size=GA_POP_SIZE, generations=GA_GENERATIONS, seed=42):
             "mean_reward": generation_mean_reward,
             "worst_reward": generation_worst_reward,
         })
-        writer.add_scalar("generation/best_reward", generation_best_reward, generation_index + 1)
-        writer.add_scalar("generation/mean_reward", generation_mean_reward, generation_index + 1)
-        writer.add_scalar("generation/worst_reward", generation_worst_reward, generation_index + 1)
+        writer.add_scalar("search/generation/reward/best", generation_best_reward, generation_index + 1)
+        writer.add_scalar("search/generation/reward/mean", generation_mean_reward, generation_index + 1)
+        writer.add_scalar("search/generation/reward/worst", generation_worst_reward, generation_index + 1)
 
         if fitness[ranked_indices[0]] > best_fitness:
             best_fitness = float(fitness[ranked_indices[0]])
@@ -859,10 +883,10 @@ def train_ga_policy(pop_size=GA_POP_SIZE, generations=GA_GENERATIONS, seed=42):
         population = np.asarray(next_population, dtype=np.float64)
 
     elapsed = time.time() - start_time
-    writer.add_scalar("summary/best_reward", best_fitness, generations)
-    writer.add_scalar("summary/training_time_s", elapsed, generations)
+    writer.add_scalar("search/summary/reward/best", best_fitness, generations)
+    writer.add_scalar("search/summary/time/train_s", elapsed, generations)
     writer.add_text(
-        "summary/best_params",
+        "search/summary/params/best",
         np.array2string(best_params, precision=4, separator=", "),
         global_step=generations,
     )
@@ -879,6 +903,7 @@ def train_ga_policy(pop_size=GA_POP_SIZE, generations=GA_GENERATIONS, seed=42):
 
 
 def score_mpc_candidate(env, first_action, horizon=MPC_HORIZON):
+    # MPC 通过复制环境并向前滚动，评估当前候选动作的短期效果。
     sim_env = deepcopy(env)
     total_reward = 0.0
 
@@ -893,6 +918,7 @@ def score_mpc_candidate(env, first_action, horizon=MPC_HORIZON):
 
 
 def mpc_policy(env, horizon=MPC_HORIZON):
+    # 这里实现的是“小候选集 + 滚动预测”的轻量 MPC，不是连续优化求解器。
     base_dispatch, base_renewable_request = rule_policy_components(env)
     best_action = None
     best_score = float("-inf")
@@ -927,57 +953,6 @@ def build_comparison_row(strategy, result, training_time_s=0.0):
     }
 
 
-def save_policy_result(result, prefix, training_time_s=0.0):
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    daily_path = EXPORT_DIR / f"{prefix}_daily.csv"
-    summary_path = EXPORT_DIR / f"{prefix}_summary.csv"
-
-    if result["records"]:
-        fieldnames = list(result["records"][0].keys())
-        with daily_path.open("w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in result["records"]:
-                writer.writerow({key: _to_python_value(value) for key, value in row.items()})
-
-    summary_row = {
-        "policy": prefix,
-        "total_reward": float(result["total_reward"]),
-        "annual_renewable_share": float(result["annual_renewable_share"]),
-        "total_station_power_10k_kwh": float(result["total_station_power_kwh"] / 1e4),
-        "total_grid_cost_10k_yuan": float(result["total_grid_cost_yuan"] / 1e4),
-        "total_startup_shutdown_cost_10k_yuan": float(result["total_startup_shutdown_cost_yuan"] / 1e4),
-        "total_operating_cost_10k_yuan": float(result["total_operating_cost_yuan"] / 1e4),
-        "total_penalty": float(result["total_penalty"]),
-        "training_time_s": float(training_time_s),
-        "avg_inference_time_ms": float(result["avg_inference_time_ms"]),
-        "max_inference_time_ms": float(result["max_inference_time_ms"]),
-    }
-    with summary_path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=list(summary_row.keys()))
-        writer.writeheader()
-        writer.writerow(summary_row)
-
-    return {
-        "daily_path": str(daily_path),
-        "summary_path": str(summary_path),
-    }
-
-
-def save_comparison_summary(rows, filename="comparison_summary.csv"):
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = EXPORT_DIR / filename
-    if not rows:
-        return str(output_path)
-
-    with output_path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-    return str(output_path)
-
-
 def create_tensorboard_writer(run_prefix, run_suffix=None, config_text=None):
     TENSORBOARD_DIR.mkdir(parents=True, exist_ok=True)
     run_name = time.strftime(f"{run_prefix}_%Y%m%d_%H%M%S")
@@ -986,7 +961,7 @@ def create_tensorboard_writer(run_prefix, run_suffix=None, config_text=None):
     tensorboard_run_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(tensorboard_run_dir))
     if config_text:
-        writer.add_text("config/training", config_text, global_step=0)
+        writer.add_text("config/train", config_text, global_step=0)
     return {
         "writer": writer,
         "tensorboard_root": str(tensorboard_root),
@@ -995,44 +970,51 @@ def create_tensorboard_writer(run_prefix, run_suffix=None, config_text=None):
 
 
 def log_result_to_tensorboard(writer, strategy, result, training_time_s=0.0, step=0):
-    metrics = {
-        "total_reward": float(result["total_reward"]),
-        "total_operating_cost_10k_yuan": float(result["total_operating_cost_yuan"] / 1e4),
-        "total_power_10k_kwh": float(result["total_station_power_kwh"] / 1e4),
-        "annual_renewable_share": float(result["annual_renewable_share"]),
-        "total_penalty": float(result["total_penalty"]),
-        "training_time_s": float(training_time_s),
-        "avg_inference_time_ms": float(result["avg_inference_time_ms"]),
-        "max_inference_time_ms": float(result["max_inference_time_ms"]),
-        "compressor_4500_power_10k_kwh": float(result["total_compressor_input_kwh"][0] / 1e4),
-        "compressor_4000_power_10k_kwh": float(result["total_compressor_input_kwh"][1] / 1e4),
-    }
-    for metric_name, value in metrics.items():
-        writer.add_scalar(f"result/{strategy}/{metric_name}", value, step)
+    writer.add_scalar(f"result/{strategy}/reward/total", float(result["total_reward"]), step)
+    writer.add_scalar(
+        f"result/{strategy}/cost/operating_10k_yuan",
+        float(result["total_operating_cost_yuan"] / 1e4),
+        step,
+    )
+    writer.add_scalar(
+        f"result/{strategy}/power/total_10k_kwh",
+        float(result["total_station_power_kwh"] / 1e4),
+        step,
+    )
+    writer.add_scalar(
+        f"result/{strategy}/renewable/annual_share",
+        float(result["annual_renewable_share"]),
+        step,
+    )
+    writer.add_scalar(f"result/{strategy}/penalty/total", float(result["total_penalty"]), step)
+    writer.add_scalar(f"result/{strategy}/time/train_s", float(training_time_s), step)
+    writer.add_scalar(
+        f"result/{strategy}/time/inference_avg_ms",
+        float(result["avg_inference_time_ms"]),
+        step,
+    )
+    writer.add_scalar(
+        f"result/{strategy}/time/inference_max_ms",
+        float(result["max_inference_time_ms"]),
+        step,
+    )
+    writer.add_scalar(
+        f"result/{strategy}/power/compressor_4500_10k_kwh",
+        float(result["total_compressor_input_kwh"][0] / 1e4),
+        step,
+    )
+    writer.add_scalar(
+        f"result/{strategy}/power/compressor_4000_10k_kwh",
+        float(result["total_compressor_input_kwh"][1] / 1e4),
+        step,
+    )
 
 
 def log_comparison_rows_to_tensorboard(writer, rows, step=0):
-    metric_names = [
-        "total_reward",
-        "total_operating_cost_10k_yuan",
-        "total_power_10k_kwh",
-        "annual_renewable_share",
-        "total_penalty",
-        "training_time_s",
-        "avg_inference_time_ms",
-    ]
     for row in rows:
         strategy = row["strategy"]
-        for metric_name in metric_names:
-            writer.add_scalar(f"comparison/{metric_name}/{strategy}", float(row[metric_name]), step)
-
-
-def log_artifacts_to_tensorboard(writer, artifact_paths, step=0):
-    writer.add_text(
-        "artifacts/paths",
-        "\n".join(f"{label}: {path}" for label, path in artifact_paths),
-        global_step=step,
-    )
+        for metric_name, tag_name in COMPARISON_TENSORBOARD_TAGS.items():
+            writer.add_scalar(f"comparison/{tag_name}/{strategy}", float(row[metric_name]), step)
 
 
 class TrainingMetricsCallback(BaseCallback):
@@ -1040,36 +1022,23 @@ class TrainingMetricsCallback(BaseCallback):
         self,
         eval_freq=EVAL_FREQ,
         n_eval_episodes=EVAL_EPISODES,
-        output_path=EXPORT_DIR / "training_metrics.csv",
         tensorboard_run_dir=None,
     ):
         super().__init__()
         self.eval_freq = eval_freq
         self.n_eval_episodes = n_eval_episodes
-        self.output_path = Path(output_path)
         self.tensorboard_run_dir = Path(tensorboard_run_dir) if tensorboard_run_dir is not None else None
         self.writer = None
-        self.fieldnames = [
-            "timestep",
-            "reward",
-            "green_ratio",
-            "total_power_10k_kwh",
-            "grid_cost_10k_yuan",
-            "startup_cost_10k_yuan",
-            "total_cost_10k_yuan",
-            "penalty",
-        ]
+        self.best_mean_reward = float("-inf")
+        self.best_model_parameters = None
+        self.best_timestep = 0
 
     def _on_training_start(self):
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.output_path.open("w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=self.fieldnames)
-            writer.writeheader()
         if self.tensorboard_run_dir is not None:
             self.tensorboard_run_dir.mkdir(parents=True, exist_ok=True)
             self.writer = SummaryWriter(log_dir=str(self.tensorboard_run_dir))
             self.writer.add_text(
-                "config/training",
+                "config/train",
                 (
                     f"timesteps={TRAIN_TIMESTEPS}, gamma={TRAIN_GAMMA}, learning_rate={TRAIN_LEARNING_RATE}, "
                     f"eval_freq={self.eval_freq}, eval_episodes={self.n_eval_episodes}"
@@ -1082,45 +1051,59 @@ class TrainingMetricsCallback(BaseCallback):
             return True
 
         metrics = evaluate_model_metrics(self.model, episodes=self.n_eval_episodes)
-        row = {"timestep": int(self.num_timesteps), **metrics}
-        with self.output_path.open("a", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=self.fieldnames)
-            writer.writerow(row)
+        current_reward = float(metrics["reward"])
+        if current_reward > self.best_mean_reward:
+            self.best_mean_reward = current_reward
+            self.best_model_parameters = deepcopy(self.model.get_parameters())
+            self.best_timestep = int(self.num_timesteps)
 
         if self.writer is not None:
             for key, value in metrics.items():
-                self.writer.add_scalar(f"eval/{key}", value, self.num_timesteps)
+                tag_name = EVAL_TENSORBOARD_TAGS.get(key, key)
+                self.writer.add_scalar(f"eval/{tag_name}", value, self.num_timesteps)
             self.writer.flush()
 
         return True
 
     def _on_training_end(self):
+        if self.best_model_parameters is None:
+            metrics = evaluate_model_metrics(self.model, episodes=self.n_eval_episodes)
+            self.best_mean_reward = float(metrics["reward"])
+            self.best_model_parameters = deepcopy(self.model.get_parameters())
+            self.best_timestep = int(self.num_timesteps)
         if self.writer is not None:
+            self.writer.add_scalar("eval/reward/best", self.best_mean_reward, self.best_timestep)
+            self.writer.add_text(
+                "summary/best_checkpoint",
+                f"timestep={self.best_timestep}, reward={self.best_mean_reward:.4f}",
+                global_step=self.best_timestep,
+            )
+            self.writer.flush()
             self.writer.close()
 
 
+def build_best_model(model_cls, model_kwargs, model_device, parameters):
+    best_model = model_cls(
+        "MlpPolicy",
+        CompetitionSchedulingEnv(),
+        verbose=0,
+        device=model_device,
+        tensorboard_log=None,
+        **model_kwargs,
+    )
+    best_model.set_parameters(parameters, exact_match=True)
+    return best_model
+
+
 def train_rl_agent(algo_name, total_timesteps=TRAIN_TIMESTEPS):
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    # SAC、TD3、PPO 共用同一套训练、评估和 TensorBoard 流程。
     TENSORBOARD_DIR.mkdir(parents=True, exist_ok=True)
 
     algo_name = algo_name.lower()
-    algo_dir = MODEL_DIR / algo_name
-    evaluation_log_dir = algo_dir / "eval_logs"
-    algo_dir.mkdir(parents=True, exist_ok=True)
-    evaluation_log_dir.mkdir(parents=True, exist_ok=True)
-
-    train_monitor_path = algo_dir / "train_monitor.csv"
-    eval_monitor_path = algo_dir / "eval_monitor.csv"
-    training_metrics_path = EXPORT_DIR / f"{algo_name}_training_metrics.csv"
     run_name = time.strftime(f"{algo_name}_%Y%m%d_%H%M%S")
     tensorboard_root = TENSORBOARD_DIR / run_name
     tensorboard_run_dir = tensorboard_root / f"{algo_name}_1"
-    env = Monitor(CompetitionSchedulingEnv(), filename=str(train_monitor_path))
-    eval_env = Monitor(CompetitionSchedulingEnv(), filename=str(eval_monitor_path))
-    callback_best_model_path = algo_dir / "best_model"
-    named_best_model_path = MODEL_DIR / f"best_{algo_name}_competition"
-    final_model_path = MODEL_DIR / f"final_{algo_name}_competition"
+    env = CompetitionSchedulingEnv()
 
     if algo_name == "sac":
         model_cls = SAC
@@ -1154,23 +1137,11 @@ def train_rl_agent(algo_name, total_timesteps=TRAIN_TIMESTEPS):
     else:
         raise ValueError(f"Unsupported RL algorithm: {algo_name}")
 
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=str(algo_dir),
-        log_path=str(evaluation_log_dir),
-        eval_freq=EVAL_FREQ,
-        n_eval_episodes=EVAL_EPISODES,
-        deterministic=True,
-        render=False,
-        verbose=1,
-    )
     metrics_callback = TrainingMetricsCallback(
         eval_freq=EVAL_FREQ,
         n_eval_episodes=EVAL_EPISODES,
-        output_path=training_metrics_path,
         tensorboard_run_dir=tensorboard_run_dir,
     )
-    callback = CallbackList([eval_callback, metrics_callback])
 
     model = model_cls(
         "MlpPolicy",
@@ -1181,14 +1152,10 @@ def train_rl_agent(algo_name, total_timesteps=TRAIN_TIMESTEPS):
         **model_kwargs,
     )
     start = time.time()
-    model.learn(total_timesteps=total_timesteps, callback=callback, tb_log_name=algo_name)
+    model.learn(total_timesteps=total_timesteps, callback=metrics_callback, tb_log_name=algo_name)
     elapsed = time.time() - start
-    model.save(str(final_model_path))
-
-    best_exists = Path(str(callback_best_model_path) + ".zip").exists()
-    if best_exists:
-        best_model = model_cls.load(str(callback_best_model_path), device=model_device)
-        best_model.save(str(named_best_model_path))
+    if metrics_callback.best_model_parameters is not None:
+        best_model = build_best_model(model_cls, model_kwargs, model_device, metrics_callback.best_model_parameters)
     else:
         best_model = model
 
@@ -1198,13 +1165,8 @@ def train_rl_agent(algo_name, total_timesteps=TRAIN_TIMESTEPS):
         "final_model": model,
         "best_model": best_model,
         "elapsed": elapsed,
-        "best_mean_reward": float(eval_callback.best_mean_reward),
-        "final_model_path": str(final_model_path) + ".zip",
-        "best_model_path": str(named_best_model_path) + ".zip" if best_exists else None,
-        "training_metrics_path": str(training_metrics_path),
-        "evaluation_npz_path": str(evaluation_log_dir / "evaluations.npz"),
-        "train_monitor_path": str(train_monitor_path),
-        "eval_monitor_path": str(eval_monitor_path),
+        "best_mean_reward": float(metrics_callback.best_mean_reward),
+        "best_model_step": int(metrics_callback.best_timestep),
         "tensorboard_root": str(tensorboard_root),
         "tensorboard_run_dir": str(tensorboard_run_dir),
     }
@@ -1251,7 +1213,6 @@ def print_summary(result, label, training_time_s=0.0):
 
 if __name__ == "__main__":
     print(f"训练设备: {DEVICE}")
-    print("比赛项目 MVP: 智能调度 + 新能源协同")
     print(f"年度周期: 采气 {EXTRACTION_DAYS} 天 / 注气 {INJECTION_DAYS} 天 / 平衡 {BALANCE_DAYS} 天")
     print(f"绿电目标占比: {MIN_RENEWABLE_SHARE:.0%}")
 
@@ -1272,18 +1233,12 @@ if __name__ == "__main__":
 
     env = CompetitionSchedulingEnv()
     official_rule_result = run_policy_episode(CompetitionSchedulingEnv(), rule_policy)
-    official_rule_paths = save_policy_result(official_rule_result, "rule_policy")
     rule_result = run_policy_episode(env, mild_rule_policy)
-    mild_rule_paths = save_policy_result(rule_result, "mild_rule_policy")
     print_summary(rule_result, "规则调度")
     log_result_to_tensorboard(benchmark_writer, "official_rule", official_rule_result)
     log_result_to_tensorboard(benchmark_writer, "rule", rule_result)
 
     comparison_rows = [build_comparison_row("rule", rule_result)]
-    artifact_paths = [
-        ("正式规则数据", official_rule_paths["daily_path"]),
-        ("弱化规则数据", mild_rule_paths["daily_path"]),
-    ]
 
     print("\n前 5 天调度记录:")
     print("day | phase      | rate(10^4m3/d) | c4500 | c4000 | power(kWh) | pressure(MPa) | renewable_share")
@@ -1298,19 +1253,13 @@ if __name__ == "__main__":
     if RUN_TRAINING:
         ga_training = train_ga_policy()
         ga_result = run_policy_episode(CompetitionSchedulingEnv(), make_ga_policy(ga_training["params"]))
-        ga_paths = save_policy_result(ga_result, "ga_policy", training_time_s=ga_training["elapsed"])
         print_summary(ga_result, "GA 调度", training_time_s=ga_training["elapsed"])
         comparison_rows.append(build_comparison_row("ga", ga_result, training_time_s=ga_training["elapsed"]))
-        artifact_paths.append(("GA 数据", ga_paths["daily_path"]))
-        artifact_paths.append(("GA TensorBoard 根目录", ga_training["tensorboard_root"]))
-        artifact_paths.append(("GA TensorBoard run", ga_training["tensorboard_run_dir"]))
         log_result_to_tensorboard(benchmark_writer, "ga", ga_result, training_time_s=ga_training["elapsed"])
 
         mpc_result = run_policy_episode(CompetitionSchedulingEnv(), mpc_policy)
-        mpc_paths = save_policy_result(mpc_result, "mpc_policy")
         print_summary(mpc_result, "MPC 调度")
         comparison_rows.append(build_comparison_row("mpc", mpc_result))
-        artifact_paths.append(("MPC 数据", mpc_paths["daily_path"]))
         log_result_to_tensorboard(benchmark_writer, "mpc", mpc_result)
 
         rl_outputs = []
@@ -1318,7 +1267,6 @@ if __name__ == "__main__":
             training_result = trainer()
 
             best_result = run_policy_episode(CompetitionSchedulingEnv(), make_rl_policy(training_result["best_model"]))
-            best_paths = save_policy_result(best_result, f"{algo_name}_best", training_time_s=training_result["elapsed"])
             print_summary(best_result, f"{algo_name.upper()}-best 调度", training_time_s=training_result["elapsed"])
             comparison_rows.append(
                 build_comparison_row(f"{algo_name}_best", best_result, training_time_s=training_result["elapsed"])
@@ -1331,7 +1279,6 @@ if __name__ == "__main__":
             )
 
             final_result = run_policy_episode(CompetitionSchedulingEnv(), make_rl_policy(training_result["final_model"]))
-            final_paths = save_policy_result(final_result, f"{algo_name}_final", training_time_s=training_result["elapsed"])
             print_summary(final_result, f"{algo_name.upper()}-final 调度", training_time_s=training_result["elapsed"])
             log_result_to_tensorboard(
                 benchmark_writer,
@@ -1341,34 +1288,21 @@ if __name__ == "__main__":
             )
 
             rl_outputs.append((algo_name, training_result))
-            artifact_paths.append((f"{algo_name.upper()}-best 数据", best_paths["daily_path"]))
-            artifact_paths.append((f"{algo_name.upper()}-final 数据", final_paths["daily_path"]))
 
-        comparison_path = save_comparison_summary(comparison_rows)
         print_comparison_table(comparison_rows)
         print(f"\nGA 最优回报: {ga_training['best_reward']:.2f}")
+        print(f"GA TensorBoard 根目录: {ga_training['tensorboard_root']}")
+        print(f"GA TensorBoard run: {ga_training['tensorboard_run_dir']}")
 
         for algo_name, training_result in rl_outputs:
             print(f"\n{algo_name.upper()} 训练耗时: {training_result['elapsed']:.2f} 秒")
             print(f"{algo_name.upper()} best 评估回报: {training_result['best_mean_reward']:.2f}")
-            print(f"{algo_name.upper()} best 模型: {training_result['best_model_path'] or '未产生单独 best，使用 final'}")
-            print(f"{algo_name.upper()} final 模型: {training_result['final_model_path']}")
-            print(f"{algo_name.upper()} 训练过程数据: {training_result['training_metrics_path']}")
-            print(f"{algo_name.upper()} 评估曲线数据: {training_result['evaluation_npz_path']}")
-            print(f"{algo_name.upper()} 训练 monitor: {training_result['train_monitor_path']}")
-            print(f"{algo_name.upper()} 评估 monitor: {training_result['eval_monitor_path']}")
+            print(f"{algo_name.upper()} best 评估步数: {training_result['best_model_step']}")
             print(f"{algo_name.upper()} TensorBoard 根目录: {training_result['tensorboard_root']}")
             print(f"{algo_name.upper()} TensorBoard run: {training_result['tensorboard_run_dir']}")
-            artifact_paths.append((f"{algo_name.upper()} TensorBoard 根目录", training_result["tensorboard_root"]))
-            artifact_paths.append((f"{algo_name.upper()} TensorBoard run", training_result["tensorboard_run_dir"]))
 
         log_comparison_rows_to_tensorboard(benchmark_writer, comparison_rows)
-        log_artifacts_to_tensorboard(benchmark_writer, artifact_paths)
         benchmark_writer.flush()
-
-        for label, path in artifact_paths:
-            print(f"{label}: {path}")
-        print(f"对比汇总: {comparison_path}")
 
     print(f"Benchmark TensorBoard 根目录: {benchmark_tensorboard['tensorboard_root']}")
     print(f"Benchmark TensorBoard run: {benchmark_tensorboard['tensorboard_run_dir']}")
