@@ -5,6 +5,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from envs import compressor
+
 
 @dataclass
 class EnvConfig:
@@ -44,6 +46,11 @@ class EnvConfig:
 	# surge/choke on the normalized flow phi = Qin/omega (per unit of phi).
 	w_speed: float = 1.0
 	w_surge: float = 2000.0
+	# Soft pressure margin: added ONLY to the (learning-signal) constraint cost, giving a
+	# dense gradient as pressure approaches the safe band before a hard violation. It does
+	# NOT change the binary violation flag or the scoring penalty, so baselines are unaffected.
+	p_soft_margin: float = 8.0
+	w_soft_margin: float = 0.3
 
 	# Optional fixed terminal linepack target (kg equiv.).
 	# If None, the target is derived from the initial steady-state pressures (default = 9000).
@@ -132,8 +139,12 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.action_space = spaces.Box(low=1.0, high=2.0, shape=(1,), dtype=np.float32)
 
 		# Observation layout:
-		# [norm_demand, norm_price, norm_p2, norm_p3, norm_linepack, sin_t, cos_t, horizon price profile]
-		self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(7 + self.horizon,), dtype=np.float32)
+		# [norm_demand, norm_price, norm_p2, norm_p3, norm_linepack, sin_t, cos_t,
+		#  horizon price profile, horizon demand profile]
+		# The full price+demand look-ahead gives the agent the same forecast information an
+		# MPC controller would use, so the comparison reflects control quality, not access to
+		# information.
+		self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(7 + 2 * self.horizon,), dtype=np.float32)
 
 		# Node-edge incidence matrix.
 		# Rows: source node(1), internal node(2), demand node(3)
@@ -163,6 +174,8 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.w_terminal_linepack = float(cfg.w_terminal_linepack)
 		self.w_speed = float(cfg.w_speed)
 		self.w_surge = float(cfg.w_surge)
+		self.p_soft_margin = float(cfg.p_soft_margin)
+		self.w_soft_margin = float(cfg.w_soft_margin)
 
 		# Compressor power model parameters and map coefficients.
 		# Head and efficiency polynomial coefficients are aligned to the paper table style.
@@ -180,6 +193,9 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.phi_upper = self.qin_max / self.omega_max
 		self.poly_h = np.array(cfg.poly_h, dtype=np.float64)
 		self.poly_eta = np.array(cfg.poly_eta, dtype=np.float64)
+		# Cached parameter bundle for the shared compressor model (envs/compressor.py),
+		# the single source of truth reused by the DP/MPC planning baselines.
+		self._comp_params = compressor.CompressorParams.from_env(self)
 
 		self.current_hour = 0
 		self.P_internal = np.array([100.0, 100.0], dtype=np.float64)
@@ -290,12 +306,17 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			-1.0,
 			1.0,
 		).astype(np.float32)
+		norm_demands = np.clip(
+			(self._episode_demand - self.obs_norm["demand_center"]) / max(self.obs_norm["demand_scale"], 1e-6),
+			-1.0,
+			1.0,
+		).astype(np.float32)
 
 		head = np.array(
 			[norm_demand, norm_price, norm_p2, norm_p3, norm_linepack, np.sin(t), np.cos(t)],
 			dtype=np.float32,
 		)
-		return np.concatenate([head, norm_prices])
+		return np.concatenate([head, norm_prices, norm_demands])
 
 	def _compute_flow(self, p_source):
 		# Paper-style steady flow relation (Weymouth-like):
@@ -306,63 +327,11 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		q = np.sign(dp2) * np.sqrt(np.abs(dp2) / self.K)
 		return q
 
-	def _compressor_head(self, alpha):
-		# Adiabatic head from the discharge (pressure) ratio pj/pi = alpha (Eq. 9):
-		#   H = (Z R T / M) * kappa/(kappa-1) * [ alpha^((kappa-1)/kappa) - 1 ]
-		# Z*R*T/M is lumped into head_thermo_coeff (kJ/kg).
-		exp_term = (self.kappa - 1.0) / self.kappa
-		ratio_term = max(alpha ** exp_term - 1.0, 0.0)
-		return self.head_thermo_coeff * (self.kappa / (self.kappa - 1.0)) * ratio_term
-
-	def _solve_speed(self, head, qin):
-		# Solve Eq. 7 for the normalized inlet-flow coefficient phi = Qin/omega, given the
-		# adiabatic head H (Eq. 9) and the inlet volumetric flow Qin. With omega = Qin/phi,
-		#   H / omega^2 = polyH(phi)
-		#   => DH*phi^3 + (CH - H/Qin^2)*phi^2 + BH*phi + AH = 0.
-		# poly_h is stored ascending [AH, BH, CH, DH]; np.roots needs descending order.
-		if qin <= 1e-9 or head <= 0.0:
-			# alpha ~ 1 -> no compression requested; idle at minimum speed.
-			idle = self.omega_min
-			return idle, (qin / idle if qin > 0.0 else 0.0), idle
-
-		coeffs = self.poly_h[::-1].astype(np.float64)  # [DH, CH, BH, AH]
-		coeffs[1] -= head / (qin * qin)
-		roots = np.roots(coeffs)
-		candidates = [r.real for r in roots if abs(r.imag) < 1e-9 and r.real > 1e-9]
-
-		if candidates:
-			# Prefer the root whose speed omega = Qin/phi lands inside the valid band.
-			def speed_gap(phi):
-				w = qin / phi
-				return max(self.omega_min - w, 0.0) + max(w - self.omega_max, 0.0)
-			phi_star = min(candidates, key=speed_gap)
-			omega_raw = qin / phi_star
-		else:
-			omega_raw = 0.5 * (self.omega_min + self.omega_max)
-
-		# omega_raw is the natural (unconstrained) speed; clipping it to the feasible band
-		# is what makes an out-of-band demand a constraint violation (checked in step()).
-		omega = float(np.clip(omega_raw, self.omega_min, self.omega_max))
-		phi_eff = qin / omega  # normalized flow consistent with the applied (clipped) speed
-		return omega, phi_eff, float(omega_raw)
-
-	def _compressor_map(self, alpha, qin):
-		# Paper compressor characteristics (Eqs. 7-9): action(alpha) -> head -> speed and
-		# efficiency, both polynomials sharing the normalized argument phi = Qin/omega.
-		head = self._compressor_head(alpha)
-		omega, phi, omega_raw = self._solve_speed(head, qin)
-		# Efficiency Eq. 8 at phi (poly_eta stored ascending -> reverse for np.polyval).
-		eff_percent = np.polyval(self.poly_eta[::-1], phi)
-		eff = float(np.clip(eff_percent / 100.0, 0.60, 0.88))
-		return float(omega), eff, float(head), float(phi), float(omega_raw)
-
 	def _compressor_power_kwh(self, q1, alpha):
-		# Compressor electricity model in kWh for one step.
-		qin = self.qin_per_flow * max(q1, 0.0)
-		omega, eta, head, phi, omega_raw = self._compressor_map(alpha, qin)
-		# Power relation P = Q * rho * H / eta (Eq. 11); gas density/units lumped into power_coeff.
-		power_kw = self.power_coeff * qin * max(head, 0.0) / max(eta, 1e-6)
-		return power_kw * self.dt_hour, omega, eta, head, phi, omega_raw
+		# Delegate to the shared compressor model (envs/compressor.py) so the env and the
+		# DP/MPC baselines use identical physics. Returns
+		# (power_kwh, omega, eta, head, phi, omega_raw).
+		return compressor.power_kwh(q1, alpha, self._comp_params, self.dt_hour)
 
 	def step(self, action):
 		alpha = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
@@ -393,21 +362,34 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		reward = -purchase_cost
 		violation = False
 		penalty = 0.0
+		# Weight-free, unit-normalized constraint cost c (the CMDP cost signal used by the
+		# Lagrangian-SAC agent). Each term is the violation magnitude relative to its band,
+		# so a single dual variable lambda can trade economics against feasibility.
+		constraint_cost = 0.0
+		p_band = max(self.p_max_safe - self.p_min_safe, 1e-6)
 
 		for p in self.P_internal:
 			if p < self.p_min_safe:
 				violation = True
 				penalty += self.w_pressure * (self.p_min_safe - p)
+				constraint_cost += (self.p_min_safe - p) / p_band
 			if p > self.p_max_safe:
 				violation = True
 				penalty += self.w_pressure * (p - self.p_max_safe)
+				constraint_cost += (p - self.p_max_safe) / p_band
+			# Soft margin (learning signal only): ramps up as p enters within p_soft_margin
+			# of either safe bound, encouraging the policy to keep an operating margin.
+			constraint_cost += self.w_soft_margin * max(self.p_min_safe + self.p_soft_margin - p, 0.0) / self.p_soft_margin
+			constraint_cost += self.w_soft_margin * max(p - (self.p_max_safe - self.p_soft_margin), 0.0) / self.p_soft_margin
 
 		if abs(q[0]) > self.q1_max:
 			violation = True
 			penalty += self.w_flow * (abs(q[0]) - self.q1_max)
+			constraint_cost += (abs(q[0]) - self.q1_max) / self.q1_max
 		if abs(q[1]) > self.q2_max:
 			violation = True
 			penalty += self.w_flow * (abs(q[1]) - self.q2_max)
+			constraint_cost += (abs(q[1]) - self.q2_max) / self.q2_max
 
 		# Compressor operating-envelope constraints (paper Eq. 20), only when the unit is
 		# actually running (head > 0, i.e. alpha > 1). Two checks:
@@ -416,19 +398,25 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		#   2. Surge/choke: the normalized flow phi = Qin/omega must stay within the band
 		#      [phi_lower, phi_upper] = [Qin_min/omega_min, Qin_max/omega_max].
 		if head > 0.0:
+			omega_band = max(self.omega_max - self.omega_min, 1e-6)
+			phi_band = max(self.phi_upper - self.phi_lower, 1e-6)
 			if omega_raw < self.omega_min:
 				violation = True
 				penalty += self.w_speed * (self.omega_min - omega_raw)
+				constraint_cost += (self.omega_min - omega_raw) / omega_band
 			elif omega_raw > self.omega_max:
 				violation = True
 				penalty += self.w_speed * (omega_raw - self.omega_max)
+				constraint_cost += (omega_raw - self.omega_max) / omega_band
 
 			if phi < self.phi_lower:
 				violation = True
 				penalty += self.w_surge * (self.phi_lower - phi)
+				constraint_cost += (self.phi_lower - phi) / phi_band
 			elif phi > self.phi_upper:
 				violation = True
 				penalty += self.w_surge * (phi - self.phi_upper)
+				constraint_cost += (phi - self.phi_upper) / phi_band
 
 		# Economic objective with physical penalties:
 		# r_t = - Cost_t - Penalty_t
@@ -439,8 +427,10 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		if terminated:
 			# Terminal inventory consistency to prevent end-of-day linepack depletion.
 			terminal_linepack_gap = abs(float(np.sum(self.M_internal)) - self._linepack_target_end)
-			penalty += self.w_terminal_linepack * terminal_linepack_gap / max(self._linepack_target_end, 1e-6)
-			reward -= self.w_terminal_linepack * terminal_linepack_gap / max(self._linepack_target_end, 1e-6)
+			rel_gap = terminal_linepack_gap / max(self._linepack_target_end, 1e-6)
+			penalty += self.w_terminal_linepack * rel_gap
+			reward -= self.w_terminal_linepack * rel_gap
+			constraint_cost += rel_gap
 		else:
 			terminal_linepack_gap = 0.0
 		next_obs = self._get_obs(hour=self.horizon - 1 if terminated else self.current_hour)
@@ -464,6 +454,8 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			"power_kwh": float(power_kwh),
 			"purchase_cost": float(purchase_cost),
 			"penalty": float(penalty),
+			"econ_reward": float(-purchase_cost),
+			"constraint_cost": float(constraint_cost),
 			"terminal_linepack_gap": float(terminal_linepack_gap),
 			"violation": violation,
 		}
