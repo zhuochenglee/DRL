@@ -40,16 +40,36 @@ class EnvConfig:
 	w_pressure: float = 1000.0
 	w_flow: float = 5.0
 	w_terminal_linepack: float = 250.0
+	# Compressor constraint weights (paper Eq. 20): speed out of band (per rpm) and
+	# surge/choke on the normalized flow phi = Qin/omega (per unit of phi).
+	w_speed: float = 1.0
+	w_surge: float = 2000.0
 
 	# Optional fixed terminal linepack target (kg equiv.).
 	# If None, the target is derived from the initial steady-state pressures (default = 9000).
 	linepack_target: Optional[float] = None
 
-	# Compressor map and thermodynamic parameters
+	# Compressor map and thermodynamic parameters (paper Eqs. 7-11).
 	kappa: float = 1.30
-	power_coeff: float = 0.090
+	# Lumped density/units coefficient in the power relation P = Q * rho * H / eta (Eq. 11).
+	# Calibrated so the per-step electricity power stays in the same range as before
+	# (a few kW at a nominal operating point), keeping the reward weights meaningful.
+	power_coeff: float = 4.5e-6
+	# Lumped thermodynamic head coefficient Z*R*T/M (kJ/kg) for the adiabatic head (Eq. 9).
+	head_thermo_coeff: float = 138.0
+	# Converts the abstract pipe-1 flow into the compressor inlet volumetric flow Qin used
+	# by the characteristic polynomials (Eqs. 7-8); lands Qin in the paper's ~4000-12500 band.
+	qin_per_flow: float = 10.0
 	omega_min: float = 5000.0
 	omega_max: float = 9400.0
+	# Compressor inlet volumetric-flow bounds (m3/h, paper case studies), used together
+	# with the speed bounds to define the surge/choke band on phi = Qin/omega (Eq. 20).
+	qin_min: float = 4000.0
+	qin_max: float = 12500.0
+	# Ascending-power coefficients [A, B, C, D] of the compressor characteristic maps, with
+	# the normalized inlet-flow argument phi = Qin/omega (paper Table 3):
+	#   H / omega^2 = AH + BH*phi + CH*phi^2 + DH*phi^3   (Eq. 7)
+	#   eta         = AE + BE*phi + CE*phi^2 + DE*phi^3   (Eq. 8)
 	poly_h: np.ndarray = field(
 		default_factory=lambda: np.array([6.223e-6, -1.450e-5, 1.618e-5, -6.261e-6], dtype=np.float64)
 	)
@@ -141,13 +161,23 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.w_pressure = float(cfg.w_pressure)
 		self.w_flow = float(cfg.w_flow)
 		self.w_terminal_linepack = float(cfg.w_terminal_linepack)
+		self.w_speed = float(cfg.w_speed)
+		self.w_surge = float(cfg.w_surge)
 
 		# Compressor power model parameters and map coefficients.
 		# Head and efficiency polynomial coefficients are aligned to the paper table style.
 		self.kappa = float(cfg.kappa)
 		self.power_coeff = float(cfg.power_coeff)
+		self.head_thermo_coeff = float(cfg.head_thermo_coeff)
+		self.qin_per_flow = float(cfg.qin_per_flow)
 		self.omega_min = float(cfg.omega_min)
 		self.omega_max = float(cfg.omega_max)
+		self.qin_min = float(cfg.qin_min)
+		self.qin_max = float(cfg.qin_max)
+		# Surge/choke band on the normalized characteristic phi = Qin/omega (Eq. 20):
+		#   phi_lower = Qin_min/omega_min,  phi_upper = Qin_max/omega_max
+		self.phi_lower = self.qin_min / self.omega_min
+		self.phi_upper = self.qin_max / self.omega_max
 		self.poly_h = np.array(cfg.poly_h, dtype=np.float64)
 		self.poly_eta = np.array(cfg.poly_eta, dtype=np.float64)
 
@@ -276,25 +306,63 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		q = np.sign(dp2) * np.sqrt(np.abs(dp2) / self.K)
 		return q
 
-	def _compressor_map(self, alpha):
-		# Paper mapping idea: action(alpha) -> required head -> speed and efficiency.
+	def _compressor_head(self, alpha):
+		# Adiabatic head from the discharge (pressure) ratio pj/pi = alpha (Eq. 9):
+		#   H = (Z R T / M) * kappa/(kappa-1) * [ alpha^((kappa-1)/kappa) - 1 ]
+		# Z*R*T/M is lumped into head_thermo_coeff (kJ/kg).
 		exp_term = (self.kappa - 1.0) / self.kappa
-		head_factor = max(alpha ** exp_term - 1.0, 0.0)
+		ratio_term = max(alpha ** exp_term - 1.0, 0.0)
+		return self.head_thermo_coeff * (self.kappa / (self.kappa - 1.0)) * ratio_term
 
-		# Convert head demand into normalized speed ratio and then into rpm.
-		norm_speed = np.clip(0.58 + 1.25 * head_factor, 0.0, 1.0)
-		omega = self.omega_min + norm_speed * (self.omega_max - self.omega_min)
+	def _solve_speed(self, head, qin):
+		# Solve Eq. 7 for the normalized inlet-flow coefficient phi = Qin/omega, given the
+		# adiabatic head H (Eq. 9) and the inlet volumetric flow Qin. With omega = Qin/phi,
+		#   H / omega^2 = polyH(phi)
+		#   => DH*phi^3 + (CH - H/Qin^2)*phi^2 + BH*phi + AH = 0.
+		# poly_h is stored ascending [AH, BH, CH, DH]; np.roots needs descending order.
+		if qin <= 1e-9 or head <= 0.0:
+			# alpha ~ 1 -> no compression requested; idle at minimum speed.
+			idle = self.omega_min
+			return idle, (qin / idle if qin > 0.0 else 0.0), idle
 
-		n = omega / self.omega_max
-		eff_percent = np.polyval(self.poly_eta, n)
-		eff = np.clip(eff_percent / 100.0, 0.60, 0.88)
-		return float(omega), float(eff), float(head_factor)
+		coeffs = self.poly_h[::-1].astype(np.float64)  # [DH, CH, BH, AH]
+		coeffs[1] -= head / (qin * qin)
+		roots = np.roots(coeffs)
+		candidates = [r.real for r in roots if abs(r.imag) < 1e-9 and r.real > 1e-9]
+
+		if candidates:
+			# Prefer the root whose speed omega = Qin/phi lands inside the valid band.
+			def speed_gap(phi):
+				w = qin / phi
+				return max(self.omega_min - w, 0.0) + max(w - self.omega_max, 0.0)
+			phi_star = min(candidates, key=speed_gap)
+			omega_raw = qin / phi_star
+		else:
+			omega_raw = 0.5 * (self.omega_min + self.omega_max)
+
+		# omega_raw is the natural (unconstrained) speed; clipping it to the feasible band
+		# is what makes an out-of-band demand a constraint violation (checked in step()).
+		omega = float(np.clip(omega_raw, self.omega_min, self.omega_max))
+		phi_eff = qin / omega  # normalized flow consistent with the applied (clipped) speed
+		return omega, phi_eff, float(omega_raw)
+
+	def _compressor_map(self, alpha, qin):
+		# Paper compressor characteristics (Eqs. 7-9): action(alpha) -> head -> speed and
+		# efficiency, both polynomials sharing the normalized argument phi = Qin/omega.
+		head = self._compressor_head(alpha)
+		omega, phi, omega_raw = self._solve_speed(head, qin)
+		# Efficiency Eq. 8 at phi (poly_eta stored ascending -> reverse for np.polyval).
+		eff_percent = np.polyval(self.poly_eta[::-1], phi)
+		eff = float(np.clip(eff_percent / 100.0, 0.60, 0.88))
+		return float(omega), eff, float(head), float(phi), float(omega_raw)
 
 	def _compressor_power_kwh(self, q1, alpha):
 		# Compressor electricity model in kWh for one step.
-		omega, eta, head_factor = self._compressor_map(alpha)
-		power_kw = self.power_coeff * max(q1, 0.0) * max(head_factor, 0.0) * (omega / self.omega_max) / max(eta, 1e-6)
-		return power_kw * self.dt_hour, omega, eta
+		qin = self.qin_per_flow * max(q1, 0.0)
+		omega, eta, head, phi, omega_raw = self._compressor_map(alpha, qin)
+		# Power relation P = Q * rho * H / eta (Eq. 11); gas density/units lumped into power_coeff.
+		power_kw = self.power_coeff * qin * max(head, 0.0) / max(eta, 1e-6)
+		return power_kw * self.dt_hour, omega, eta, head, phi, omega_raw
 
 	def step(self, action):
 		alpha = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
@@ -319,7 +387,7 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.P_internal = self.M_internal / self.beta
 
 		q1 = float(abs((self.A_source @ q)[0]))
-		power_kwh, omega, eta = self._compressor_power_kwh(q1=q1, alpha=alpha)
+		power_kwh, omega, eta, head, phi, omega_raw = self._compressor_power_kwh(q1=q1, alpha=alpha)
 		purchase_cost = power_kwh * price
 
 		reward = -purchase_cost
@@ -340,6 +408,27 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		if abs(q[1]) > self.q2_max:
 			violation = True
 			penalty += self.w_flow * (abs(q[1]) - self.q2_max)
+
+		# Compressor operating-envelope constraints (paper Eq. 20), only when the unit is
+		# actually running (head > 0, i.e. alpha > 1). Two checks:
+		#   1. Rotational speed must stay within [omega_min, omega_max]. omega_raw is the
+		#      natural speed solved from Eq. 7; demanding a speed outside the band is a violation.
+		#   2. Surge/choke: the normalized flow phi = Qin/omega must stay within the band
+		#      [phi_lower, phi_upper] = [Qin_min/omega_min, Qin_max/omega_max].
+		if head > 0.0:
+			if omega_raw < self.omega_min:
+				violation = True
+				penalty += self.w_speed * (self.omega_min - omega_raw)
+			elif omega_raw > self.omega_max:
+				violation = True
+				penalty += self.w_speed * (omega_raw - self.omega_max)
+
+			if phi < self.phi_lower:
+				violation = True
+				penalty += self.w_surge * (self.phi_lower - phi)
+			elif phi > self.phi_upper:
+				violation = True
+				penalty += self.w_surge * (phi - self.phi_upper)
 
 		# Economic objective with physical penalties:
 		# r_t = - Cost_t - Penalty_t
@@ -368,7 +457,10 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			"q1": float(q[0]),
 			"q2": float(q[1]),
 			"compressor_speed_rpm": float(omega),
+			"compressor_speed_demand_rpm": float(omega_raw),
 			"compressor_efficiency": float(eta),
+			"compressor_head": float(head),
+			"flow_coeff_phi": float(phi),
 			"power_kwh": float(power_kwh),
 			"purchase_cost": float(purchase_cost),
 			"penalty": float(penalty),
