@@ -1,3 +1,5 @@
 models/
 TRAINING_VISUALIZATION_PLAN.md
 paper.pdf
+.DS_Store
+.codegraph/

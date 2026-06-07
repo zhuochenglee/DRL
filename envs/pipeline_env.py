@@ -41,6 +41,10 @@ class EnvConfig:
 	w_flow: float = 5.0
 	w_terminal_linepack: float = 250.0
 
+	# Optional fixed terminal linepack target (kg equiv.).
+	# If None, the target is derived from the initial steady-state pressures (default = 9000).
+	linepack_target: Optional[float] = None
+
 	# Compressor map and thermodynamic parameters
 	kappa: float = 1.30
 	power_coeff: float = 0.090
@@ -150,7 +154,12 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.current_hour = 0
 		self.P_internal = np.array([100.0, 100.0], dtype=np.float64)
 		self.M_internal = self.beta * self.P_internal
-		self._linepack_target_end = float(np.sum(self.M_internal))
+		# Use explicit target if provided, otherwise derive from initial steady state.
+		self._linepack_target_end = (
+			float(cfg.linepack_target)
+			if cfg.linepack_target is not None
+			else float(np.sum(self.M_internal))
+		)
 
 		self.demand_series = np.array(cfg.demand_series, dtype=np.float64)
 		self.tou_price_series = np.array(cfg.tou_price_series, dtype=np.float64)
@@ -192,7 +201,12 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.current_hour = 0
 		self.P_internal = np.array([100.0, 100.0], dtype=np.float64)
 		self.M_internal = self.beta * self.P_internal
-		self._linepack_target_end = float(np.sum(self.M_internal))
+		# Re-derive target each reset (respects fixed override from config).
+		self._linepack_target_end = (
+			float(self.config.linepack_target)
+			if self.config.linepack_target is not None
+			else float(np.sum(self.M_internal))
+		)
 
 		self._episode_demand = self.demand_series.copy()
 		self._episode_prices = self.tou_price_series.copy()

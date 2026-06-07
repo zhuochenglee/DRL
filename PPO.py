@@ -4,7 +4,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from stable_baselines3 import SAC
+from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.env_checker import check_env
 
@@ -73,12 +73,12 @@ class EpisodeStatsCallback(BaseCallback):
 			if info.get("violation", False):
 				self._violations += 1
 			if done and self._cost:
-				self.logger.record("sac/episode/total_cost",      float(sum(self._cost)))
-				self.logger.record("sac/episode/violation_hours", float(self._violations))
-				self.logger.record("sac/episode/mean_alpha",      float(np.mean(self._alpha)))
-				self.logger.record("sac/episode/mean_p2_bar",     float(np.mean(self._p2)))
-				self.logger.record("sac/episode/mean_p3_bar",     float(np.mean(self._p3)))
-				self.logger.record("sac/episode/mean_linepack",   float(np.mean(self._linepack)))
+				self.logger.record("ppo/episode/total_cost", float(sum(self._cost)))
+				self.logger.record("ppo/episode/violation_hours", float(self._violations))
+				self.logger.record("ppo/episode/mean_alpha", float(np.mean(self._alpha)))
+				self.logger.record("ppo/episode/mean_p2_bar", float(np.mean(self._p2)))
+				self.logger.record("ppo/episode/mean_p3_bar", float(np.mean(self._p3)))
+				self.logger.record("ppo/episode/mean_linepack", float(np.mean(self._linepack)))
 				self.logger.dump(self.num_timesteps)
 				self._reset_buffers()
 		return True
@@ -114,34 +114,34 @@ class CurveLoggingCallback(BaseCallback):
 		hours = [r["hour"] for r in records]
 
 		fig, axes = plt.subplots(2, 2, figsize=(12, 8), tight_layout=True)
-		fig.suptitle(f"Deterministic 24h Eval — step {self.num_timesteps}", fontsize=11)
+		fig.suptitle(f"Deterministic 24h Eval - step {self.num_timesteps}", fontsize=11)
 
 		axes[0, 0].plot(hours, [r["alpha"] for r in records], marker="o", markersize=3)
-		axes[0, 0].set_title("Compressor action \u03b1")
+		axes[0, 0].set_title("Compressor action alpha")
 		axes[0, 0].set_xlabel("Hour")
-		axes[0, 0].set_ylabel("\u03b1")
+		axes[0, 0].set_ylabel("alpha")
 		axes[0, 0].grid(True)
 
-		axes[0, 1].plot(hours, [r["p2"] for r in records], label="p\u2082", marker="o", markersize=3)
-		axes[0, 1].plot(hours, [r["p3"] for r in records], label="p\u2083", marker="s", markersize=3)
-		axes[0, 1].axhline(env.p_min_safe, color="red",   linestyle="--", linewidth=0.8, label="p_min_safe")
+		axes[0, 1].plot(hours, [r["p2"] for r in records], label="p2", marker="o", markersize=3)
+		axes[0, 1].plot(hours, [r["p3"] for r in records], label="p3", marker="s", markersize=3)
+		axes[0, 1].axhline(env.p_min_safe, color="red", linestyle="--", linewidth=0.8, label="p_min_safe")
 		axes[0, 1].axhline(env.p_max_safe, color="green", linestyle="--", linewidth=0.8, label="p_max_safe")
-		axes[0, 1].set_title("Node pressures (bar)")
+		axes[0, 1].set_title("Node pressures")
 		axes[0, 1].set_xlabel("Hour")
-		axes[0, 1].set_ylabel("Pressure (bar)")
+		axes[0, 1].set_ylabel("Pressure")
 		axes[0, 1].legend(fontsize=7)
 		axes[0, 1].grid(True)
 
 		axes[1, 0].plot(hours, [r["linepack"] for r in records], color="purple", marker="o", markersize=3)
 		axes[1, 0].set_title("Pipeline linepack")
 		axes[1, 0].set_xlabel("Hour")
-		axes[1, 0].set_ylabel("Mass (kg equiv.)")
+		axes[1, 0].set_ylabel("Mass")
 		axes[1, 0].grid(True)
 
 		axes[1, 1].bar(hours, [r["purchase_cost"] for r in records], color="orange")
 		axes[1, 1].set_title("Electricity cost per hour")
 		axes[1, 1].set_xlabel("Hour")
-		axes[1, 1].set_ylabel("Cost (yuan)")
+		axes[1, 1].set_ylabel("Cost")
 		axes[1, 1].grid(True, axis="y")
 
 		writer = None
@@ -150,7 +150,7 @@ class CurveLoggingCallback(BaseCallback):
 				writer = fmt.writer
 				break
 		if writer is not None:
-			writer.add_figure("sac/eval/24h_curves", fig, self._eval_count)
+			writer.add_figure("ppo/eval/24h_curves", fig, self._eval_count)
 
 		plt.close(fig)
 		self._eval_count += 1
@@ -196,15 +196,18 @@ if __name__ == "__main__":
 		w_flow=5.0,
 		w_terminal_linepack=250.0,
 	)
-	env      = PaperInspiredDynamicLinepackEnv(config=config)
+	env = PaperInspiredDynamicLinepackEnv(config=config)
 	eval_env = PaperInspiredDynamicLinepackEnv(config=config)
 	check_env(env, warn=True)
 
 	total_timesteps = 120000
-	model = SAC(
-		"MlpPolicy", env,
+	model = PPO(
+		"MlpPolicy",
+		env,
 		verbose=0,
-		learning_rate=1e-3,
+		learning_rate=3e-4,
+		n_steps=2048,
+		batch_size=64,
 		gamma=0.995,
 		tensorboard_log="models/tensorboard",
 	)
@@ -213,6 +216,6 @@ if __name__ == "__main__":
 		EpisodeStatsCallback(),
 		CurveLoggingCallback(eval_env=eval_env, eval_freq=20000),
 	])
-	model.learn(total_timesteps=total_timesteps, callback=callback, tb_log_name="sac")
+	model.learn(total_timesteps=total_timesteps, callback=callback, tb_log_name="ppo")
 
 	run_deterministic_day(env, model)
