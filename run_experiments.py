@@ -36,6 +36,7 @@ from baselines import (evaluate_model, evaluate_schedule, ga_schedule,
                        rule_based_schedule, run_mpc)
 from DP import solve_dp
 from constrained_sac import train_constrained_sac
+from distill_mpc import distill
 
 OUT_DIR = Path("models/exports/paper")
 NET_ARCH = [128, 64, 32]   # shared actor/critic architecture (paper-aligned)
@@ -157,12 +158,22 @@ def run(args):
 			for sid, (d, p) in enumerate(scenarios):
 				records.append(_rec(name, seed, "perturb", sid, evaluate_model(eval_env, model, d, p), infer))
 
+		# Distilled-MPC: behavioral-cloning + DAgger distillation of the MPC feedback law
+		# into a millisecond MLP policy.
+		student, _ = distill(cfg_eval, n_train=args.distill_scenarios, n_dagger=args.dagger,
+		                     epochs=args.distill_epochs, seed=seed)
+		t0 = time.time(); m = evaluate_model(eval_env, student, nominal_d, nominal_p); infer = time.time() - t0
+		records.append(_rec("Distilled-MPC", seed, "nominal", -1, m, infer))
+		if seed == 0: dispatch_curves["Distilled-MPC"] = m["records"]
+		for sid, (d, p) in enumerate(scenarios):
+			records.append(_rec("Distilled-MPC", seed, "perturb", sid, evaluate_model(eval_env, student, d, p), infer))
+
 	_save_and_plot(records, dispatch_curves, eval_env, args)
 	return records
 
 
 # ── aggregation, CSV, figures ─────────────────────────────────────────────────
-METHOD_ORDER = ["Rule", "GA", "PPO", "TD3", "SAC", "Constrained-SAC", "MPC", "DP-oracle"]
+METHOD_ORDER = ["Rule", "GA", "PPO", "TD3", "SAC", "Constrained-SAC", "Distilled-MPC", "MPC", "DP-oracle"]
 
 
 def _agg(records, kind):
@@ -207,7 +218,7 @@ def _save_and_plot(records, dispatch_curves, env, args):
 	viols = [nom[m]["viol_mean"] for m in methods]
 	fig, ax = plt.subplots(figsize=(9, 5))
 	bars = ax.bar(methods, costs, yerr=errs, capsize=4,
-	              color=["#bbb" if m != "Constrained-SAC" else "#d1495b" for m in methods])
+	              color=["#d1495b" if m == "Distilled-MPC" else ("#5b8fd1" if m == "Constrained-SAC" else "#bbb") for m in methods])
 	for b, v in zip(bars, viols):
 		ax.text(b.get_x() + b.get_width() / 2, b.get_height(), f"viol={v:.1f}",
 		        ha="center", va="bottom", fontsize=7)
@@ -223,7 +234,7 @@ def _save_and_plot(records, dispatch_curves, env, args):
 	rv = [rob[m]["viol_mean"] for m in methods_r]
 	fig, ax = plt.subplots(figsize=(9, 5))
 	bars = ax.bar(methods_r, rc, yerr=re_, capsize=4,
-	              color=["#bbb" if m != "Constrained-SAC" else "#d1495b" for m in methods_r])
+	              color=["#d1495b" if m == "Distilled-MPC" else ("#5b8fd1" if m == "Constrained-SAC" else "#bbb") for m in methods_r])
 	for b, v in zip(bars, rv):
 		ax.text(b.get_x() + b.get_width() / 2, b.get_height(), f"viol={v:.1f}",
 		        ha="center", va="bottom", fontsize=7)
@@ -235,7 +246,7 @@ def _save_and_plot(records, dispatch_curves, env, args):
 
 
 def _plot_dispatch(env, curves):
-	want = [m for m in ["Constrained-SAC", "DP-oracle", "MPC"] if m in curves]
+	want = [m for m in ["Distilled-MPC", "Constrained-SAC", "DP-oracle", "MPC"] if m in curves]
 	if not want:
 		return
 	fig, axes = plt.subplots(2, 2, figsize=(12, 8), tight_layout=True)
@@ -278,10 +289,14 @@ def parse_args():
 	p.add_argument("--lam-init", type=float, default=50.0)
 	p.add_argument("--dual-lr", type=float, default=1.0)
 	p.add_argument("--lam-max", type=float, default=1500.0)
+	p.add_argument("--dagger", type=int, default=12)
+	p.add_argument("--distill-scenarios", type=int, default=300)
+	p.add_argument("--distill-epochs", type=int, default=1000)
 	p.add_argument("--quick", action="store_true", help="tiny budget for debugging the harness")
 	a = p.parse_args()
 	if a.quick:
 		a.steps, a.seeds, a.perturb, a.ga_pop, a.ga_gens = 4000, 1, 3, 30, 20
+		a.dagger, a.distill_scenarios, a.distill_epochs = 4, 60, 300
 	return a
 
 

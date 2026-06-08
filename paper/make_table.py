@@ -10,7 +10,7 @@ import collections
 from pathlib import Path
 
 EXP = Path("models/exports/paper")
-ORDER = ["DP-oracle", "MPC", "GA", "PPO", "TD3", "SAC", "Constrained-SAC", "Rule"]
+ORDER = ["DP-oracle", "MPC", "Distilled-MPC", "GA", "PPO", "TD3", "SAC", "Constrained-SAC", "Rule"]
 
 
 def load_summary():
@@ -49,13 +49,13 @@ def main():
 	# headline derived numbers
 	dp = float(S["DP-oracle"]["nominal_cost_mean"])
 	print("\n--- headline numbers ---")
-	for m in ["MPC", "GA", "SAC", "Constrained-SAC", "PPO", "TD3"]:
+	for m in ["MPC", "GA", "Distilled-MPC", "SAC", "Constrained-SAC", "PPO", "TD3"]:
 		if m in S:
 			c = float(S[m]["nominal_cost_mean"])
 			gap = 100 * (c - dp) / dp
 			print(f"{m:<16} cost={c:6.2f}  gap_vs_DP={gap:+6.1f}%  viol={float(S[m]['nominal_viol']):.1f}")
 	if "MPC" in L:
-		for m in ["SAC", "Constrained-SAC"]:
+		for m in ["SAC", "Constrained-SAC", "Distilled-MPC"]:
 			if m in L and L[m] > 0:
 				print(f"{m} latency speed-up vs MPC: {L['MPC']/L[m]:.0f}x ; vs GA: {L['GA']/L[m]:.0f}x")
 
