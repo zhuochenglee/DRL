@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 
 from envs.pipeline_env import EnvConfig, PaperInspiredDynamicLinepackEnv
-from DP import build_dp_policy
+from DP import build_dp_policy, greedy_alpha
 from baselines import evaluate_model, run_mpc
 
 NET_ARCH = [128, 64, 32]
@@ -28,14 +28,10 @@ class MPCTeacher:
 	def __init__(self, env, nominal_d, nominal_p, n_p=121, n_a=101):
 		self.p_grid, self.a_grid, self.best_action = build_dp_policy(
 			env, nominal_d, nominal_p, n_p=n_p, n_a=n_a)
-		self.dp_val = float(self.p_grid[1] - self.p_grid[0])
-		self.n_p = len(self.p_grid)
 
 	def act(self, env, hour):
-		p2, p3 = float(env.P_internal[0]), float(env.P_internal[1])
-		i2 = int(np.clip(round((p2 - self.p_grid[0]) / self.dp_val), 0, self.n_p - 1))
-		i3 = int(np.clip(round((p3 - self.p_grid[0]) / self.dp_val), 0, self.n_p - 1))
-		return float(self.a_grid[int(self.best_action[hour, i2, i3])])
+		# Topology-general greedy lookup (handles N-D DP tables).
+		return greedy_alpha(env, self.p_grid, self.a_grid, self.best_action, hour)
 
 
 # ── student MLP ───────────────────────────────────────────────────────────────

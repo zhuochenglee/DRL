@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from DP import build_dp_policy
+from DP import build_dp_policy, greedy_alpha
 
 
 def _metrics(records, total_reward):
@@ -112,16 +112,11 @@ def run_mpc(env, nominal_demand, nominal_prices, demand=None, prices=None, n_p=4
 	"""Receding-horizon control via the certainty-equivalent (nominal-model) DP
 	feedback policy, executed closed-loop on the realized environment."""
 	p_grid, a_grid, best_action = build_dp_policy(env, nominal_demand, nominal_prices, n_p=n_p, n_a=n_a)
-	dp_val = float(p_grid[1] - p_grid[0])
-	n_p = len(p_grid)
 
 	obs, _ = env.reset(options=_reset_options(demand, prices))
 	records, total_reward = [], 0.0
 	for hour in range(env.horizon):
-		p2, p3 = float(env.P_internal[0]), float(env.P_internal[1])
-		i2 = int(np.clip(round((p2 - p_grid[0]) / dp_val), 0, n_p - 1))
-		i3 = int(np.clip(round((p3 - p_grid[0]) / dp_val), 0, n_p - 1))
-		a = float(a_grid[int(best_action[hour, i2, i3])])
+		a = greedy_alpha(env, p_grid, a_grid, best_action, hour)
 		obs, reward, terminated, truncated, info = env.step(np.array([a], dtype=np.float32))
 		records.append(info)
 		total_reward += float(reward)

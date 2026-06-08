@@ -28,6 +28,15 @@ class EnvConfig:
 	)
 	K: np.ndarray = field(default_factory=lambda: np.array([0.02, 0.05], dtype=np.float64))
 	beta: np.ndarray = field(default_factory=lambda: np.array([50.0, 40.0], dtype=np.float64))
+	# Index of the pipe leaving the (single) source compressor; its throughput is the
+	# compressor inlet flow Qin. Default 0 = the first pipe.
+	source_pipe: int = 0
+	# Optional per-pipe flow limit (length m). If None, built from q1_max/q2_max for the
+	# default 2-pipe network. Generalizes the flow constraint to arbitrary topologies.
+	q_max: Optional[np.ndarray] = None
+	# Optional per-internal-node demand matrix (n_internal x horizon). If None, the single
+	# demand_series is placed on the LAST internal node (the default gun-barrel behavior).
+	demand_matrix: Optional[np.ndarray] = None
 
 	# Pressure and flow limits
 	p0_ref: float = 100.0
@@ -139,19 +148,28 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.action_space = spaces.Box(low=1.0, high=2.0, shape=(1,), dtype=np.float32)
 
 		# Observation layout:
-		# [norm_demand, norm_price, norm_p2, norm_p3, norm_linepack, sin_t, cos_t,
-		#  horizon price profile, horizon demand profile]
+		# [norm_total_demand, norm_price, norm_p (one per internal node), norm_linepack,
+		#  sin_t, cos_t, horizon price profile, horizon total-demand profile]
 		# The full price+demand look-ahead gives the agent the same forecast information an
 		# MPC controller would use, so the comparison reflects control quality, not access to
-		# information.
-		self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(7 + 2 * self.horizon,), dtype=np.float32)
+		# information. (n_internal is known after the incidence matrix is parsed below.)
+		_n_internal = int(np.array(cfg.A).shape[0] - 1)
+		self.observation_space = spaces.Box(
+			low=-1.0, high=1.0, shape=(5 + _n_internal + 2 * self.horizon,), dtype=np.float32)
 
-		# Node-edge incidence matrix.
-		# Rows: source node(1), internal node(2), demand node(3)
-		# Cols: pipeline 1 (1->2), pipeline 2 (2->3)
+		# Node-edge incidence matrix. Row 0 is the source node (with the compressor),
+		# rows 1.. are the internal/demand nodes that hold line-pack; columns are pipes.
+		# This supports an arbitrary single-source topology (gun-barrel, branch, tree).
 		self.A = np.array(cfg.A, dtype=np.float64)
+		self.n_internal = self.A.shape[0] - 1
+		self.n_pipes = self.A.shape[1]
 		self.A_source = self.A[0:1, :]
-		self.A_internal = self.A[1:3, :]
+		self.A_internal = self.A[1:, :]
+		self.source_pipe = int(cfg.source_pipe)
+		# Internal node immediately downstream of the source compressor (the node the
+		# source pipe enters); its pressure sets the compressor's feasible operating band.
+		_down = np.where(self.A_internal[:, self.source_pipe] > 0)[0]
+		self._source_down_node = int(_down[0]) if len(_down) else 0
 
 		# Hydraulic resistance constants in q = sign(dp2) * sqrt(|dp2| / K)
 		self.K = np.array(cfg.K, dtype=np.float64)
@@ -168,6 +186,13 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 
 		self.q1_max = float(cfg.q1_max)
 		self.q2_max = float(cfg.q2_max)
+		# Per-pipe flow limits (length n_pipes). Default reproduces the 2-pipe network.
+		if cfg.q_max is not None:
+			self.q_max = np.array(cfg.q_max, dtype=np.float64)
+		elif self.n_pipes == 2:
+			self.q_max = np.array([self.q1_max, self.q2_max], dtype=np.float64)
+		else:
+			self.q_max = np.full(self.n_pipes, self.q1_max, dtype=np.float64)
 
 		self.w_pressure = float(cfg.w_pressure)
 		self.w_flow = float(cfg.w_flow)
@@ -198,7 +223,7 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self._comp_params = compressor.CompressorParams.from_env(self)
 
 		self.current_hour = 0
-		self.P_internal = np.array([100.0, 100.0], dtype=np.float64)
+		self.P_internal = np.full(self.n_internal, 100.0, dtype=np.float64)
 		self.M_internal = self.beta * self.P_internal
 		# Use explicit target if provided, otherwise derive from initial steady state.
 		self._linepack_target_end = (
@@ -207,10 +232,25 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			else float(np.sum(self.M_internal))
 		)
 
-		self.demand_series = np.array(cfg.demand_series, dtype=np.float64)
+		# Demand: a per-internal-node matrix D (n_internal x horizon). For the default
+		# gun-barrel, the single demand_series sits on the last internal node. The total
+		# hourly demand (demand_series) and the per-node spatial fractions are cached so
+		# perturbations/forecasts can rescale the whole profile while preserving where gas
+		# is withdrawn.
 		self.tou_price_series = np.array(cfg.tou_price_series, dtype=np.float64)
-		if self.demand_series.shape != (self.horizon,) or self.tou_price_series.shape != (self.horizon,):
-			raise ValueError("demand_series and tou_price_series must both match horizon length")
+		base_series = np.array(cfg.demand_series, dtype=np.float64)
+		if cfg.demand_matrix is not None:
+			D = np.array(cfg.demand_matrix, dtype=np.float64)
+			if D.shape != (self.n_internal, self.horizon):
+				raise ValueError(f"demand_matrix must be ({self.n_internal}, {self.horizon}), got {D.shape}")
+		else:
+			D = np.zeros((self.n_internal, self.horizon), dtype=np.float64)
+			D[-1, :] = base_series  # single demand on the last internal node
+		self.demand_matrix = D
+		self.demand_series = D.sum(axis=0)                       # total hourly demand
+		self._spatial_frac = D / np.maximum(self.demand_series[None, :], 1e-9)
+		if self.tou_price_series.shape != (self.horizon,):
+			raise ValueError("tou_price_series must match horizon length")
 
 		self.obs_norm = {
 			"demand_center": float(cfg.demand_center),
@@ -245,7 +285,7 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		super().reset(seed=seed)
 
 		self.current_hour = 0
-		self.P_internal = np.array([100.0, 100.0], dtype=np.float64)
+		self.P_internal = np.full(self.n_internal, 100.0, dtype=np.float64)
 		self.M_internal = self.beta * self.P_internal
 		# Re-derive target each reset (respects fixed override from config).
 		self._linepack_target_end = (
@@ -254,6 +294,8 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			else float(np.sum(self.M_internal))
 		)
 
+		# _episode_demand is the TOTAL hourly demand profile; the per-node split uses the
+		# cached spatial fractions (see step()).
 		self._episode_demand = self.demand_series.copy()
 		self._episode_prices = self.tou_price_series.copy()
 
@@ -265,7 +307,7 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 
 		if self.noise_scale > 0.0:
 			noise = self.np_random.normal(0.0, self.noise_scale, size=self.horizon)
-			self._episode_demand = np.clip(self._episode_demand * (1.0 + noise), 50.0, 400.0)
+			self._episode_demand = np.clip(self._episode_demand * (1.0 + noise), 1.0, None)
 			shift = int(self.np_random.integers(-2, 3))
 			self._episode_prices = np.roll(self._episode_prices, shift)
 
@@ -286,16 +328,11 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			-1.0,
 			1.0,
 		)
-		norm_p2 = np.clip(
-			(self.P_internal[0] - self.obs_norm["pressure_center"]) / max(self.obs_norm["pressure_scale"], 1e-6),
+		norm_p = np.clip(
+			(self.P_internal - self.obs_norm["pressure_center"]) / max(self.obs_norm["pressure_scale"], 1e-6),
 			-1.0,
 			1.0,
-		)
-		norm_p3 = np.clip(
-			(self.P_internal[1] - self.obs_norm["pressure_center"]) / max(self.obs_norm["pressure_scale"], 1e-6),
-			-1.0,
-			1.0,
-		)
+		).astype(np.float32)
 
 		linepack_ratio = np.clip(np.sum(self.M_internal) / np.sum(self.beta * self.p_max_safe), 0.0, 1.0)
 		norm_linepack = 2.0 * linepack_ratio - 1.0
@@ -313,7 +350,7 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		).astype(np.float32)
 
 		head = np.array(
-			[norm_demand, norm_price, norm_p2, norm_p3, norm_linepack, np.sin(t), np.cos(t)],
+			[norm_demand, norm_price] + list(norm_p) + [norm_linepack, np.sin(t), np.cos(t)],
 			dtype=np.float32,
 		)
 		return np.concatenate([head, norm_prices, norm_demands])
@@ -338,18 +375,18 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		# Realize the command against the compressor's feasible set: a discharge ratio in
 		# the sub-minimum-speed dead band is physically infeasible and is taken as unit-off.
 		alpha = compressor.effective_discharge_ratio(
-			alpha, float(self.P_internal[0]), self.p0_ref, float(self.K[0]), self._comp_params)
+			alpha, float(self.P_internal[self._source_down_node]), self.p0_ref,
+			float(self.K[self.source_pipe]), self._comp_params)
 		hour = self.current_hour
-		demand = float(self._episode_demand[hour])
+		demand = float(self._episode_demand[hour])                 # total hourly demand
+		demand_vec = self._spatial_frac[:, hour] * self._episode_demand[hour]  # per-node
 		price = float(self._episode_prices[hour])
 
 		p_source = self.p0_ref * alpha
 		q = self._compute_flow(p_source)
 
-		q_ext_internal = np.array([0.0, -demand], dtype=np.float64)
-		# Nodal mass balance:
-		# m_dot = A_internal @ q + q_ext
-		net_flow_internal = self.A_internal @ q + q_ext_internal
+		# Nodal mass balance: m_dot = A_internal @ q - demand_per_node
+		net_flow_internal = self.A_internal @ q - demand_vec
 
 		# Dynamic linepack:
 		# m_{t+1} = m_t + Δt * m_dot, and m = beta * p
@@ -386,14 +423,12 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			constraint_cost += self.w_soft_margin * max(self.p_min_safe + self.p_soft_margin - p, 0.0) / self.p_soft_margin
 			constraint_cost += self.w_soft_margin * max(p - (self.p_max_safe - self.p_soft_margin), 0.0) / self.p_soft_margin
 
-		if abs(q[0]) > self.q1_max:
-			violation = True
-			penalty += self.w_flow * (abs(q[0]) - self.q1_max)
-			constraint_cost += (abs(q[0]) - self.q1_max) / self.q1_max
-		if abs(q[1]) > self.q2_max:
-			violation = True
-			penalty += self.w_flow * (abs(q[1]) - self.q2_max)
-			constraint_cost += (abs(q[1]) - self.q2_max) / self.q2_max
+		for e in range(self.n_pipes):
+			qe = abs(float(q[e]))
+			if qe > self.q_max[e]:
+				violation = True
+				penalty += self.w_flow * (qe - self.q_max[e])
+				constraint_cost += (qe - self.q_max[e]) / self.q_max[e]
 
 		# Compressor operating-envelope constraints (paper Eq. 20), only when the unit is
 		# actually running (head > 0, i.e. alpha > 1). Two checks:
@@ -445,11 +480,16 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 			"price": price,
 			"demand": demand,
 			"p_source": p_source,
+			# p2/p3 kept for figure compatibility (first two internal nodes); "pressures"
+			# and "p_min" generalize to any topology. p3 is taken as the worst-case node so
+			# the dispatch figure shows the binding (lowest-pressure) demand node.
 			"p2": float(self.P_internal[0]),
-			"p3": float(self.P_internal[1]),
+			"p3": float(self.P_internal[-1]),
+			"p_min": float(np.min(self.P_internal)),
+			"pressures": [float(x) for x in self.P_internal],
 			"linepack": float(np.sum(self.M_internal)),
 			"q1": float(q[0]),
-			"q2": float(q[1]),
+			"q2": float(q[self.n_pipes - 1]),
 			"compressor_speed_rpm": float(omega),
 			"compressor_speed_demand_rpm": float(omega_raw),
 			"compressor_efficiency": float(eta),
@@ -465,3 +505,35 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		}
 
 		return next_obs, float(reward), terminated, False, info
+
+
+def branched_benchmark_config(**overrides) -> EnvConfig:
+	"""A 3-internal-node branched transmission network (one source compressor).
+
+	Topology:  source(0) --p0--> junction(1) --p1--> demand(2)
+	                                         \--p2--> demand(3)
+	Pipe resistances K are derived from Table-2-range lengths/diameters via a
+	Weymouth-style K ∝ L / D^5 (scaled to the env's pressure regime). Total hourly
+	demand matches the default single-node case but is split 55/45 across the two
+	demand nodes, so the observation normalization and price profile carry over.
+	DP/MPC remain tractable (3-D pressure state).
+	"""
+	base = EnvConfig()
+	demand = np.asarray(base.demand_series, dtype=np.float64)
+	A = np.array([
+		[-1.0,  0.0,  0.0],   # source
+		[ 1.0, -1.0, -1.0],   # junction (node 1)
+		[ 0.0,  1.0,  0.0],   # demand node 2
+		[ 0.0,  0.0,  1.0],   # demand node 3
+	], dtype=np.float64)
+	pipe_LD = [(100.0, 0.406), (68.0, 0.406), (80.0, 0.432)]  # (length km, diameter m)
+	k_rel = np.array([L / (D ** 5) for L, D in pipe_LD], dtype=np.float64)
+	K = k_rel / k_rel.max() * 0.05
+	beta = np.array([50.0, 40.0, 40.0], dtype=np.float64)
+	demand_matrix = np.vstack([np.zeros(base.horizon), 0.55 * demand, 0.45 * demand])
+	return EnvConfig(
+		A=A, K=K, beta=beta, source_pipe=0,
+		demand_matrix=demand_matrix,
+		q_max=np.array([1400.0, 900.0, 800.0], dtype=np.float64),
+		**overrides,
+	)

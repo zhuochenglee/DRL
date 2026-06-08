@@ -22,7 +22,7 @@ def _compressor_tables(env, p_grid, a_grid):
 	the action alpha (not on p3), so a 2-D table is exact and cheap.
 	"""
 	p = compressor.CompressorParams.from_env(env)
-	k0 = float(env.K[0])
+	k0 = float(env.K[int(getattr(env, "source_pipe", 0))])
 	dt = float(env.dt_hour)
 	n_p, n_a = len(p_grid), len(a_grid)
 	POW = np.zeros((n_p, n_a))
@@ -42,13 +42,95 @@ def _compressor_tables(env, p_grid, a_grid):
 	return POW, ORAW, PHI, HEAD
 
 
+def build_dp_policy_nd(env, demand, prices, n_p=31, n_a=31):
+	"""General N-dimensional DP for an arbitrary single-compressor topology.
+
+	State = the internal-node pressures (N = env.n_internal). The compressor cost
+	depends only on the source-downstream node's pressure and the action, so it stays a
+	2-D precomputed table; only the value function is interpolated in N-D. `demand` is
+	the TOTAL hourly profile, split across nodes by env._spatial_frac (as in the env).
+	Returns (p_grid, a_grid, best_action) with best_action shape (horizon,)+(n_p,)*N.
+	"""
+	from scipy.interpolate import RegularGridInterpolator
+
+	cfg = env
+	N, H, n_pipes = env.n_internal, env.horizon, env.n_pipes
+	demand_total = np.asarray(demand, dtype=np.float64)
+	prices = np.asarray(prices, dtype=np.float64)
+	p_grid = np.linspace(cfg.p_hard_min, cfg.p_hard_max, n_p)
+	a_grid = np.linspace(float(cfg.action_space.low[0]), float(cfg.action_space.high[0]), n_a)
+	beta, K, A = np.asarray(env.beta), np.asarray(env.K), np.asarray(env.A)
+	A_int, dt, down = env.A_internal, float(env.dt_hour), env._source_down_node
+	froms = [int(np.where(A[:, e] == -1)[0][0]) for e in range(n_pipes)]
+	tos = [int(np.where(A[:, e] == +1)[0][0]) for e in range(n_pipes)]
+	spatial = env._spatial_frac
+	target = float(np.sum(beta * 100.0))
+
+	POW, ORAW, PHI, HEAD = _compressor_tables(env, p_grid, a_grid)   # (n_p, n_a) over down-node p
+
+	def along_down(vec):                       # reshape length-n_p vector to vary along `down` axis
+		shape = [1] * N; shape[down] = n_p
+		return vec.reshape(shape)
+
+	grids = np.meshgrid(*([p_grid] * N), indexing="ij")
+	V_next = np.zeros((n_p,) * N)
+	best_action = np.zeros((H,) + (n_p,) * N, dtype=np.int16)
+
+	for hour in range(H - 1, -1, -1):
+		dvec = spatial[:, hour] * demand_total[hour]
+		price = float(prices[hour])
+		rgi = RegularGridInterpolator(tuple([p_grid] * N), V_next, bounds_error=False, fill_value=None)
+		vals = np.empty((n_a,) + (n_p,) * N)
+		for ja, a in enumerate(a_grid):
+			p_src = cfg.p0_ref * a
+			node_p = lambda idx: (p_src if idx == 0 else grids[idx - 1])
+			q = []
+			for e in range(n_pipes):
+				dp2 = node_p(froms[e]) ** 2 - node_p(tos[e]) ** 2
+				q.append(np.sign(dp2) * np.sqrt(np.abs(dp2) / K[e]))
+			pnext = []
+			for i in range(N):
+				net = sum(A_int[i, e] * q[e] for e in range(n_pipes)) - dvec[i]
+				m = np.clip(beta[i] * grids[i] + dt * net, beta[i] * cfg.p_hard_min, beta[i] * cfg.p_hard_max)
+				pnext.append(m / beta[i])
+			running = along_down(HEAD[:, ja]) > 0.0
+			stage = along_down(POW[:, ja]) * price
+			stage = stage + cfg.w_speed * (np.maximum(env.omega_min - along_down(ORAW[:, ja]), 0.0)
+			                               + np.maximum(along_down(ORAW[:, ja]) - env.omega_max, 0.0)) * running
+			stage = stage + cfg.w_surge * (np.maximum(env.phi_lower - along_down(PHI[:, ja]), 0.0)
+			                               + np.maximum(along_down(PHI[:, ja]) - env.phi_upper, 0.0)) * running
+			stage = stage + sum(np.where(pn < cfg.p_min_safe, cfg.w_pressure * (cfg.p_min_safe - pn), 0.0)
+			                    + np.where(pn > cfg.p_max_safe, cfg.w_pressure * (pn - cfg.p_max_safe), 0.0) for pn in pnext)
+			stage = stage + sum(np.where(np.abs(q[e]) > env.q_max[e], cfg.w_flow * (np.abs(q[e]) - env.q_max[e]), 0.0)
+			                    for e in range(n_pipes))
+			if hour == H - 1:
+				lp = sum(beta[i] * pnext[i] for i in range(N))
+				stage = stage + cfg.w_terminal_linepack * np.abs(lp - target) / max(target, 1e-6)
+			pts = np.stack([pn.ravel() for pn in pnext], axis=-1)
+			vals[ja] = np.broadcast_to(stage, (n_p,) * N) + rgi(pts).reshape((n_p,) * N)
+		best_action[hour] = np.argmin(vals, axis=0).astype(np.int16)
+		V_next = np.min(vals, axis=0)
+	return p_grid, a_grid, best_action
+
+
+def greedy_alpha(env, p_grid, a_grid, best_action, hour):
+	"""Look up the DP greedy action for the env's current internal-node pressures (any N)."""
+	dp_val = float(p_grid[1] - p_grid[0]); n_p = len(p_grid)
+	idx = tuple(int(np.clip(round((float(p) - p_grid[0]) / dp_val), 0, n_p - 1)) for p in env.P_internal)
+	return float(a_grid[int(best_action[(hour,) + idx])])
+
+
 def build_dp_policy(env, demand, prices, n_p=45, n_a=31):
 	"""Backward value iteration; returns (p_grid, a_grid, best_action[horizon,n_p,n_p]).
 
 	The greedy action table is a feedback policy over the discretized state, reused
 	open-loop (perfect-foresight DP benchmark) and closed-loop (certainty-equivalent
 	MPC executed against a possibly-perturbed environment).
+
+	For non-2-node topologies, dispatches to the general N-D DP (capped grid for tractability).
 	"""
+	if env.n_internal != 2:
+		return build_dp_policy_nd(env, demand, prices, n_p=min(n_p, 31), n_a=n_a)
 	cfg = env
 	horizon = int(cfg.horizon)
 	demand = np.asarray(demand, dtype=np.float64)
@@ -140,35 +222,19 @@ def build_dp_policy(env, demand, prices, n_p=45, n_a=31):
 
 
 def solve_dp(env, demand, prices, n_p=45, n_a=31):
-	"""Perfect-foresight DP benchmark: optimal open-loop alpha schedule for the
-	given (realized) demand/prices."""
-	cfg = env
-	horizon = int(cfg.horizon)
-	demand = np.asarray(demand, dtype=np.float64)
+	"""Perfect-foresight DP benchmark: optimal open-loop alpha schedule for the given
+	(realized) demand/prices. Builds the DP feedback policy on that scenario and rolls
+	it out greedily through the env (topology-general), returning the alpha schedule."""
 	p_grid, a_grid, best_action = build_dp_policy(env, demand, prices, n_p=n_p, n_a=n_a)
-	dp_val = float(p_grid[1] - p_grid[0])
-	n_p = len(p_grid)
-	beta2, beta3 = float(cfg.beta[0]), float(cfg.beta[1])
-	k0, k1 = float(cfg.K[0]), float(cfg.K[1])
-	dt = float(cfg.dt_hour)
-
+	env.reset(options={"demand": np.asarray(demand, dtype=np.float64),
+	                   "prices": np.asarray(prices, dtype=np.float64)})
 	schedule = []
-	p2, p3 = 100.0, 100.0
-	for hour in range(horizon):
-		i2 = int(np.clip(round((p2 - p_grid[0]) / dp_val), 0, n_p - 1))
-		i3 = int(np.clip(round((p3 - p_grid[0]) / dp_val), 0, n_p - 1))
-		a = float(a_grid[best_action[hour, i2, i3]])
+	for hour in range(env.horizon):
+		a = greedy_alpha(env, p_grid, a_grid, best_action, hour)
 		schedule.append(a)
-
-		dp20 = (cfg.p0_ref * a) ** 2 - p2 ** 2
-		dp21 = p2 ** 2 - p3 ** 2
-		q0 = np.sign(dp20) * np.sqrt(np.abs(dp20) / k0)
-		q1 = np.sign(dp21) * np.sqrt(np.abs(dp21) / k1)
-		m2 = np.clip(beta2 * p2 + dt * (q0 - q1), beta2 * cfg.p_hard_min, beta2 * cfg.p_hard_max)
-		m3 = np.clip(beta3 * p3 + dt * (q1 - float(demand[hour])), beta3 * cfg.p_hard_min, beta3 * cfg.p_hard_max)
-		p2 = float(m2 / beta2)
-		p3 = float(m3 / beta3)
-
+		_, _, terminated, truncated, _ = env.step(np.array([a], dtype=np.float32))
+		if terminated or truncated:
+			break
 	return np.array(schedule, dtype=np.float64)
 
 

@@ -31,7 +31,8 @@ from stable_baselines3 import PPO, SAC, TD3
 from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from envs.pipeline_env import EnvConfig, PaperInspiredDynamicLinepackEnv
+from envs.pipeline_env import (EnvConfig, PaperInspiredDynamicLinepackEnv,
+                               branched_benchmark_config)
 from baselines import (evaluate_model, evaluate_schedule, ga_schedule,
                        rule_based_schedule, run_mpc)
 from DP import solve_dp
@@ -94,10 +95,16 @@ def _rec(method, seed, kind, sid, m, t):
 	            eff=m["mean_eff"], tlp_gap=m["terminal_linepack_gap"], time=t)
 
 
+def _make_cfg(network, noise):
+	if network == "branched":
+		return branched_benchmark_config(noise_scale=noise)
+	return EnvConfig(noise_scale=noise)
+
+
 def run(args):
 	OUT_DIR.mkdir(parents=True, exist_ok=True)
-	cfg_eval = EnvConfig(noise_scale=0.0)          # deterministic env for scoring
-	cfg_train = EnvConfig(noise_scale=args.train_noise)  # noisy env for DRL training
+	cfg_eval = _make_cfg(args.network, 0.0)            # deterministic env for scoring
+	cfg_train = _make_cfg(args.network, args.train_noise)  # noisy env for DRL training
 	eval_env = PaperInspiredDynamicLinepackEnv(config=cfg_eval)
 	nominal_d = np.asarray(eval_env.demand_series, dtype=np.float64)
 	nominal_p = np.asarray(eval_env.tou_price_series, dtype=np.float64)
@@ -282,6 +289,8 @@ def parse_args():
 	p.add_argument("--seeds", type=int, default=3)
 	p.add_argument("--perturb", type=int, default=8)
 	p.add_argument("--lr", type=float, default=3e-4)
+	p.add_argument("--network", choices=["default", "branched"], default="default",
+	               help="default = 3-node gun-barrel; branched = 4-node benchmark (3 internal nodes)")
 	p.add_argument("--train-noise", type=float, default=0.08)
 	p.add_argument("--scenario-noise", type=float, default=0.10)
 	p.add_argument("--ga-pop", type=int, default=80)
