@@ -41,6 +41,10 @@ OUT_DIR = Path("models/exports/paper")
 NET_ARCH = [128, 64, 32]   # shared actor/critic architecture (paper-aligned)
 GAMMA = 0.995
 LR = 1e-3
+# DP/MPC discretization. Finer grids reduce cost but eventually hug the constraint
+# boundary and become infeasible when executed on the continuous env; 121x101 is the
+# finest grid that stays feasible here, and serves as the DP/receding-horizon reference.
+DP_NP, DP_NA = 121, 101
 
 
 # ── scenarios ─────────────────────────────────────────────────────────────────
@@ -63,16 +67,16 @@ def _norm_env(cfg):
 	return VecNormalize(venv, norm_obs=False, norm_reward=True, gamma=GAMMA)
 
 
-def train_rl(name, cfg, steps, seed):
+def train_rl(name, cfg, steps, seed, lr=LR):
 	"""Train one DRL agent (reward-normalized env); returns (model, train_seconds)."""
 	t0 = time.time()
 	env = _norm_env(cfg)
 	common = dict(verbose=0, seed=seed, gamma=GAMMA, policy_kwargs=dict(net_arch=NET_ARCH))
 	if name == "SAC":
-		model = SAC("MlpPolicy", env, learning_rate=LR, **common)
+		model = SAC("MlpPolicy", env, learning_rate=lr, **common)
 	elif name == "TD3":
 		noise = NormalActionNoise(mean=np.zeros(1), sigma=0.2 * np.ones(1))
-		model = TD3("MlpPolicy", env, learning_rate=LR, action_noise=noise, **common)
+		model = TD3("MlpPolicy", env, learning_rate=lr, action_noise=noise, **common)
 	elif name == "PPO":
 		model = PPO("MlpPolicy", env, learning_rate=3e-4, gamma=GAMMA, seed=seed,
 		            verbose=0, policy_kwargs=dict(net_arch=NET_ARCH))
@@ -120,26 +124,26 @@ def run(args):
 			records.append(_rec("GA", seed, "perturb", sid, evaluate_schedule(eval_env, sched, d, p), t))
 
 	# MPC (nominal-model DP feedback policy, closed-loop)
-	t0 = time.time(); m = run_mpc(eval_env, nominal_d, nominal_p, nominal_d, nominal_p); t = time.time() - t0
+	t0 = time.time(); m = run_mpc(eval_env, nominal_d, nominal_p, nominal_d, nominal_p, n_p=DP_NP, n_a=DP_NA); t = time.time() - t0
 	records.append(_rec("MPC", 0, "nominal", -1, m, t)); dispatch_curves["MPC"] = m["records"]
 	for sid, (d, p) in enumerate(scenarios):
-		records.append(_rec("MPC", 0, "perturb", sid, run_mpc(eval_env, nominal_d, nominal_p, d, p), t))
+		records.append(_rec("MPC", 0, "perturb", sid, run_mpc(eval_env, nominal_d, nominal_p, d, p, n_p=DP_NP, n_a=DP_NA), t))
 
 	# DP-oracle (perfect foresight on the realized scenario)
-	t0 = time.time(); m = evaluate_schedule(eval_env, solve_dp(eval_env, nominal_d, nominal_p), nominal_d, nominal_p); t = time.time() - t0
+	t0 = time.time(); m = evaluate_schedule(eval_env, solve_dp(eval_env, nominal_d, nominal_p, n_p=DP_NP, n_a=DP_NA), nominal_d, nominal_p); t = time.time() - t0
 	records.append(_rec("DP-oracle", 0, "nominal", -1, m, t)); dispatch_curves["DP-oracle"] = m["records"]
 	for sid, (d, p) in enumerate(scenarios):
-		records.append(_rec("DP-oracle", 0, "perturb", sid, evaluate_schedule(eval_env, solve_dp(eval_env, d, p), d, p), t))
+		records.append(_rec("DP-oracle", 0, "perturb", sid, evaluate_schedule(eval_env, solve_dp(eval_env, d, p, n_p=DP_NP, n_a=DP_NA), d, p), t))
 
 	# ---- DRL agents (trained per seed) ----
 	for seed in range(args.seeds):
 		trained = {}
 		for name in ["SAC", "TD3", "PPO"]:
-			model, ttrain = train_rl(name, cfg_train, args.steps, seed)
+			model, ttrain = train_rl(name, cfg_train, args.steps, seed, lr=args.lr)
 			trained[name] = (model, ttrain)
 		csac, wrap = train_constrained_sac(cfg_train, total_timesteps=args.steps, seed=seed,
 		                                   lam_init=args.lam_init, dual_lr=args.dual_lr, lam_max=args.lam_max,
-		                                   net_arch=NET_ARCH, learning_rate=LR, gamma=GAMMA)
+		                                   net_arch=NET_ARCH, learning_rate=args.lr, gamma=GAMMA)
 		# include final lambda for logging
 		trained["Constrained-SAC"] = (csac, None)
 
@@ -266,6 +270,7 @@ def parse_args():
 	p.add_argument("--steps", type=int, default=60000)
 	p.add_argument("--seeds", type=int, default=3)
 	p.add_argument("--perturb", type=int, default=8)
+	p.add_argument("--lr", type=float, default=3e-4)
 	p.add_argument("--train-noise", type=float, default=0.08)
 	p.add_argument("--scenario-noise", type=float, default=0.10)
 	p.add_argument("--ga-pop", type=int, default=80)

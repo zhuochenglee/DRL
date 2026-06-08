@@ -335,6 +335,10 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 
 	def step(self, action):
 		alpha = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
+		# Realize the command against the compressor's feasible set: a discharge ratio in
+		# the sub-minimum-speed dead band is physically infeasible and is taken as unit-off.
+		alpha = compressor.effective_discharge_ratio(
+			alpha, float(self.P_internal[0]), self.p0_ref, float(self.K[0]), self._comp_params)
 		hour = self.current_hour
 		demand = float(self._episode_demand[hour])
 		price = float(self._episode_prices[hour])

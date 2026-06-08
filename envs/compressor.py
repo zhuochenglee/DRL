@@ -96,3 +96,32 @@ def power_kwh(q0_abs: float, alpha: float, p: CompressorParams, dt_hour: float):
 	# Eq. 11: P = Q * rho * H / eta; gas density/units lumped into power_coeff.
 	power_kw = p.power_coeff * qin * max(head, 0.0) / max(eta, 1e-6)
 	return power_kw * dt_hour, omega, eta, head, phi, omega_raw
+
+
+def effective_discharge_ratio(alpha: float, p2: float, p0_ref: float, k0: float,
+                              p: CompressorParams) -> float:
+	"""Realize a commanded discharge ratio against the compressor's feasible set.
+
+	A centrifugal unit cannot run below its minimum speed / in surge: the band
+	alpha in (1, alpha_on_min(state)) is physically infeasible. A command there is
+	realized as the unit staying OFF (alpha = 1), exactly as an operator/controller
+	would (you either keep it off or run it at >= min speed). This makes the
+	continuous action map onto the feasible set {off} U {on, alpha >= alpha_on_min}
+	and removes the speed/surge "dead-zone" violations that a Gaussian policy would
+	otherwise keep hitting. alpha_on_min is evaluated from the actual operating point,
+	so it tracks the state.
+	"""
+	if alpha <= 1.0:
+		return 1.0
+	p_src = p0_ref * alpha
+	dp20 = p_src * p_src - p2 * p2
+	q0 = (1.0 if dp20 >= 0 else -1.0) * np.sqrt(abs(dp20) / k0)
+	qin = p.qin_per_flow * abs(q0)
+	head = adiabatic_head(alpha, p)
+	if head <= 0.0 or qin <= 1e-9:
+		return 1.0
+	_, _, omega_raw = solve_speed(head, qin, p)
+	# Below minimum speed (equivalently the low-flow surge side) -> infeasible -> OFF.
+	if omega_raw < p.omega_min:
+		return 1.0
+	return alpha
