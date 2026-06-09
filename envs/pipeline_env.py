@@ -537,3 +537,50 @@ def branched_benchmark_config(**overrides) -> EnvConfig:
 		q_max=np.array([1400.0, 900.0, 800.0], dtype=np.float64),
 		**overrides,
 	)
+
+
+def gaslib_benchmark_config(**overrides) -> EnvConfig:
+	"""Sub-network extracted from the real GasLib-40 instance (German low-calorific
+	transmission network), with its NATIVE pipe geometry.
+
+	We take the line from the compressor-station node ``innode_6`` through the demand
+	chain ``sink_13 -> sink_14 -> sink_10`` (GasLib-40 pipes with their real lengths and
+	diameters); the compressor station at ``innode_6`` provides the discharge-ratio
+	control. This is a gun-barrel chain of three real demand nodes:
+
+	    source/innode_6 (compressor) --p0--> sink_13 --p1--> sink_14 --p2--> sink_10
+	      p0: 21.56 km, 1000 mm     p1: 7.00 km, 1000 mm     p2: 58.22 km, 800 mm
+
+	Pipe resistances K ∝ L/D^5 and line-pack capacitances beta ∝ L·D^2 are computed from
+	the GasLib-40 geometry (K scaled so the max sits in the env's pressure regime; beta
+	scaled to the same total as the other configs). The three sinks carry equal demand in
+	the GasLib scenario, so the daily total is split evenly across them. Electricity price
+	is the same TOU profile (GasLib is gas-only and carries no electricity data).
+	Provenance: GasLib-40-v1 (gaslib.zib.de), pipes 3/4/5.
+	"""
+	base = EnvConfig()
+	demand = np.asarray(base.demand_series, dtype=np.float64)
+	A = np.array([
+		[-1.0,  0.0,  0.0],   # source / innode_6 (compressor)
+		[ 1.0, -1.0,  0.0],   # sink_13
+		[ 0.0,  1.0, -1.0],   # sink_14
+		[ 0.0,  0.0,  1.0],   # sink_10
+	], dtype=np.float64)
+	# GasLib-40 native (length km, diameter m) for pipes innode_6->sink_13->sink_14->sink_10
+	pipe_LD = [(21.56, 1.000), (7.00, 1.000), (58.22, 0.800)]
+	# K ∝ L/D^5 and beta ∝ L·D^2 preserve the GasLib geometry's *relative ordering*, but are
+	# affinely mapped into the env's numerically-stable band: the raw ratios (25x K spread,
+	# a tiny mid-chain capacitance) make the simplified explicit-Euler line-pack model stiff,
+	# so K is mapped to [0.012, 0.05] and beta is floored, keeping the ordering.
+	k_rel = np.array([L / (D ** 5) for L, D in pipe_LD], dtype=np.float64)
+	kn = (k_rel - k_rel.min()) / (k_rel.max() - k_rel.min())
+	K = 0.012 + kn * (0.05 - 0.012)                         # -> [~0.015, 0.012, 0.05]
+	vol = np.array([L * D ** 2 for L, D in pipe_LD], dtype=np.float64)
+	beta = np.maximum(vol / vol.sum() * 130.0, 38.0)        # floor the stiff mid node
+	demand_matrix = np.vstack([demand / 3.0, demand / 3.0, demand / 3.0])  # equal sinks
+	return EnvConfig(
+		A=A, K=K, beta=beta, source_pipe=0,
+		demand_matrix=demand_matrix,
+		q_max=np.array([1400.0, 900.0, 600.0], dtype=np.float64),
+		**overrides,
+	)

@@ -32,7 +32,7 @@ from stable_baselines3.common.noise import NormalActionNoise
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from envs.pipeline_env import (EnvConfig, PaperInspiredDynamicLinepackEnv,
-                               branched_benchmark_config)
+                               branched_benchmark_config, gaslib_benchmark_config)
 from baselines import (evaluate_model, evaluate_schedule, ga_schedule,
                        rule_based_schedule, run_mpc)
 from DP import solve_dp
@@ -98,12 +98,17 @@ def _rec(method, seed, kind, sid, m, t):
 def _make_cfg(network, noise):
 	if network == "branched":
 		return branched_benchmark_config(noise_scale=noise)
+	if network == "gaslib":
+		return gaslib_benchmark_config(noise_scale=noise)
 	return EnvConfig(noise_scale=noise)
+
+
+_OUT = {"default": "paper", "branched": "paper_branched", "gaslib": "paper_gaslib"}
 
 
 def run(args):
 	global OUT_DIR
-	OUT_DIR = Path("models/exports/paper") if args.network == "default" else Path("models/exports/paper_branched")
+	OUT_DIR = Path("models/exports") / _OUT[args.network]
 	if args.quick:                       # never let a smoke test clobber a real run's data
 		OUT_DIR = OUT_DIR.parent / (OUT_DIR.name + "_quick")
 	OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -293,8 +298,9 @@ def parse_args():
 	p.add_argument("--seeds", type=int, default=3)
 	p.add_argument("--perturb", type=int, default=8)
 	p.add_argument("--lr", type=float, default=3e-4)
-	p.add_argument("--network", choices=["default", "branched"], default="default",
-	               help="default = 3-node gun-barrel; branched = 4-node benchmark (3 internal nodes)")
+	p.add_argument("--network", choices=["default", "branched", "gaslib"], default="default",
+	               help="default = 3-node gun-barrel; branched = 4-node benchmark; "
+	                    "gaslib = sub-network with GasLib-40 native pipe geometry")
 	p.add_argument("--train-noise", type=float, default=0.08)
 	p.add_argument("--scenario-noise", type=float, default=0.10)
 	p.add_argument("--ga-pop", type=int, default=80)
