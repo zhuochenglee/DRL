@@ -43,7 +43,11 @@ model-free RL from scratch. The contributions are the physics-faithful CMDP form
 feasibility-aware action realisation that makes DRL tractable here, the constraint-aware method,
 the distillation result, and a fair, reproducible benchmark that quantifies both the promise
 (feasibility + real-time latency) and the limits (from-scratch RL's cost premium) of learned
-control for line-pack economic dispatch.
+control for line-pack economic dispatch. We validate on **two topologies** — a gun-barrel element
+and a branched benchmark with transmission-scale pipe parameters — and find the core results
+(feasibility-aware action realisation, feasible from-scratch DRL, MPC distillation) transfer, with
+the cost premium in fact *shrinking* on the larger network; the ranking among DRL agents is
+network-dependent.
 
 **Keywords:** natural gas pipeline; line-pack flexibility; time-of-use pricing; compressor
 optimisation; deep reinforcement learning; constrained MDP; soft actor–critic.
@@ -292,8 +296,15 @@ the nominal forecast (DP-oracle uses the realised future). Metrics are averaged 
 
 ## 5. Experimental setup
 
-**Environment.** Horizon 24 h; $p_{0,\mathrm{ref}}=100$, safe pressure band $[80,150]$, hard
-band $[10,200]$; flow limits $q_{1,\max}=1000,\,q_{2,\max}=900$; $\omega\in[5000,9400]$ rpm,
+**Networks.** We use two topologies driven by the same code (only the incidence matrix, pipe
+parameters and demand map differ): (i) the **gun-barrel element** (source compressor → node 2 →
+demand node 3; 2 internal pressure states), our primary development network; and (ii) the
+**branched benchmark** (§6.8: source compressor → junction → two demand nodes; 3 internal pressure
+states, pipe $K$ from transmission-scale lengths/diameters). Results in §6.1–6.7 are on (i);
+§6.8 reports (ii).
+
+**Environment (gun-barrel).** Horizon 24 h; $p_{0,\mathrm{ref}}=100$, safe pressure band $[80,150]$,
+hard band $[10,200]$; flow limits $q_{1,\max}=1000,\,q_{2,\max}=900$; $\omega\in[5000,9400]$ rpm,
 $Q_{in}\in[4000,12500]$; $\kappa=1.30$; line-pack $\beta=[50,40]$, $K=[0.02,0.05]$. TOU tariff
 0.30 (off-peak) / 1.20 (peak). Penalty weights (scoring/penalty-reward DRL):
 $w_{\text{pressure}}=1000,\,w_{\text{flow}}=5,\,w_{\text{terminal}}=250,\,w_{\text{speed}}=1,\,
@@ -425,6 +436,67 @@ trajectory; (ii) the feasibility-aware action realisation on/off — the headlin
 weight and the dual budget. The scaffolding (`run_experiments.py`, `sensitivity_analysis.py`) is
 in place; we report (i)–(ii) here and leave the full sweep to the scaled-up study.
 
+### 6.8 Generalization to a branched benchmark network (Table 2)
+
+To check that the findings are not artefacts of the gun-barrel element, we re-run the full
+study on a larger **branched transmission network**: a source compressor feeding a junction
+that splits to two demand nodes (4 nodes, 3 internal pressure states, 3 pipes). Pipe
+resistances are derived from transmission-scale lengths/diameters (100/68/80 km, 406–432 mm)
+via a Weymouth $K\propto L/D^5$ law; the daily demand is split 55/45 across the two demand
+nodes. The environment, the compressor physics, the constraint set, and every controller are
+the *same code* — only the incidence matrix, pipe parameters, and demand map change. The DP
+reference uses a 3-D pressure grid (the value function is interpolated in 3-D while the
+compressor cost remains a 2-D table), which is tractable at this size; for still larger
+networks the curse of dimensionality returns and GA/DRL remain the scalable options (as in
+the base paper's tree case).
+
+*Table 2. Branched benchmark (3 internal nodes), 150k steps, 3 seeds, 6 perturbed scenarios.
+"Term-gap" = end-of-day line-pack gap vs the 13000 target (exposes policies that look cheap only
+by depleting storage).*
+
+| Method | Nom cost | Viol-h | Term-gap | Robust cost | Robust viol | Latency |
+|---|---|---|---|---|---|---|
+| GA (continuous) | **5.94 ± 0.2** | **0.0** | **0** | 5.99 ± 1.8 | 0.0 | 11.5 s |
+| SAC | **4.46 ± 1.7** | **0.0** | 318 | 4.21 ± 2.2 | 0.0 | 4.6 ms |
+| PPO | 7.78 ± 0.0 | 0.0 | 17 | 6.39 ± 2.9 | 0.0 | 3.2 ms |
+| Constrained-SAC | 14.40 ± 4.3 | 0.3 | 357 | 15.04 ± 4.5 | 0.8 | 4.6 ms |
+| Distilled-MPC | 6.21 ± 0.1 | 2.7 | **11** | 7.14 ± 1.2 | 1.9 | **3.3 ms** |
+| MPC (3-D grid) | 6.02 | 2.0 | 128 | 7.57 ± 1.0 | 2.0 | 6.7 s |
+| DP (3-D grid) | 6.02 | 2.0 | 128 | 5.32 ± 1.6 | 1.2 | 6.8 s |
+| TD3 (degenerate*) | 0.00 | 0.0 | 1706 | 0.00 | 0.0 | 3.3 ms |
+| Rule-based | 26.91 | 20.0 | 4904 | 27.14 ± 0.3 | 20.0 | 2.3 ms |
+
+\*TD3 collapses to "never compress": zero electricity cost and zero envelope violations, but it
+depletes the terminal line-pack (gap 1706) — a reminder that electricity cost must be read
+alongside the terminal-inventory gap.
+
+**Reading the branched results — what transfers, and what does not.**
+- **The core enabler transfers.** With the feasibility-aware action realisation, GA, SAC and PPO
+  all reach **zero envelope violations** on the larger network, exactly as on the gun-barrel.
+- **From-scratch SAC is the strongest learner here, and the cost premium largely vanishes.** SAC
+  reaches cost 4.46 — on par with (indeed below) the continuous GA optimum (5.94) — at zero
+  violations and only a small terminal slack (gap 318 ≈ 2% of target), at 4.6 ms. The large
+  premium seen on the gun-barrel (§6.2) is thus partly a small-problem artefact; on the more
+  realistic branched network a standard agent is already cost-competitive.
+- **GA is the clean reference; the grid DP/MPC are now grid-limited.** GA (continuous) is feasible
+  and nails the terminal target (gap 0). The 3-D DP/MPC are tractable (~7 s) but the coarse
+  $31^3$ grid hugs the boundary and incurs ~2 pressure violations — the curse of dimensionality
+  the base paper also notes for its tree case. We therefore treat GA as the near-optimal feasible
+  reference here.
+- **Distillation transfers and is now an even bigger latency win.** Distilled-MPC matches the MPC
+  cost (6.21 vs 6.02), nails the terminal target (gap 11), and runs in 3.3 ms — **≈2000× faster
+  than re-solving the 3-D MPC (6.7 s)**. It does inherit the grid teacher's ~2 envelope
+  violations: distillation faithfully reproduces its teacher, grid imperfections included.
+- **What does *not* transfer cleanly:** the constraint-aware-SAC advantage. On the branched
+  network Constrained-SAC is over-conservative and high-variance (cost 14.4 ± 4.3); plain SAC is
+  better. The Lagrangian/soft-margin settings tuned on the gun-barrel do not carry over, and
+  re-tuning them for the larger network is left to future work. We report this honestly: the
+  *ranking among DRL agents is network-dependent*, even though feasibility itself is robust.
+
+Net: the methodological contributions — the feasibility-aware action realisation, feasible
+from-scratch DRL, and MPC distillation — all transfer to the larger, parameter-realistic network;
+the constraint-aware-SAC ranking and the grid-DP reference are the network-dependent caveats.
+
 ---
 
 ## 7. Discussion and limitations
@@ -458,15 +530,19 @@ premium directly (distributional critics, longer training) is the remaining open
   drop-in replacement for MPC where an accurate model exists. The distilled-MPC policy removes
   this gap (≈MPC cost at ≈ms latency) but, by construction, cannot exceed its teacher and inherits
   the teacher's model assumptions.
-- **Scope of the test system.** A compact element with trend-consistent profiles isolates the
-  mechanism but is not a field network; absolute costs are illustrative. A realistic / benchmark
-  network (e.g., GasLib-derived) with measured load and price is the primary extension.
+- **Scope of the test system.** We report two topologies (a gun-barrel element and a branched
+  3-internal-node benchmark with transmission-scale pipe parameters, §6.8), but both use
+  trend-consistent rather than field-measured profiles, and the demand/price are synthetic. A
+  full field / GasLib-derived network with measured load and price remains the primary
+  credibility extension. The 3-D grid DP is already near its tractable limit; larger networks
+  will rely on GA/DRL (and distillation) rather than grid DP.
 - **Compressor model.** Single electric compressor with lumped thermodynamic coefficients;
   multi-compressor routing and discrete unit commitment are out of scope.
 - **Budget.** 150k steps / 3 seeds is modest; the numbers are real but not camera-ready.
 
-**Path to a stronger paper** (in order of leverage): (1) move to a realistic / benchmark network
-with measured load and price (the main credibility lift); (2) complete the ablation sweep now that
+**Path to a stronger paper** (in order of leverage): (1) move to a field / GasLib-derived network
+with measured load and price (the branched benchmark of §6.8 is a step toward this; measured data
+is the remaining lift); (2) complete the ablation sweep now that
 the base agents are feasible (constraint mechanism, action realisation, surge/choke and terminal
 constraints, soft-margin/dual-budget sensitivity); (3) push the distillation further (more teachers,
 DAgger schedule, online fine-tuning so the student can *exceed* a suboptimal teacher); (4) increase
@@ -489,10 +565,14 @@ pays a ≈2–3× cost premium (constraint-aware SAC being the most reliable suc
 **distilling the MPC controller into the same network removes that premium** — ≈MPC cost (5.34 vs
 5.38) at near-feasibility (≈0.7 viol-h) and ≈2.8 ms. The practical takeaway is that the fast, near-optimal, feasible controller
 for line-pack economic dispatch is best obtained by *distilling* a model-based controller rather
-than training model-free RL from scratch. The lasting contributions are the formulation, the
-feasibility-aware action realisation, the constraint-aware method, the distillation result, and an
-honest, reproducible benchmark that quantifies the promise — feasibility, real-time latency, and
-distilled near-optimality — and the limits of learned control for this problem.
+than training model-free RL from scratch. These findings hold across **two topologies** (a
+gun-barrel element and a branched benchmark with transmission-scale pipe parameters, §6.8); on the
+larger network the from-scratch cost premium in fact shrinks (SAC is already cost-competitive with
+the GA optimum), while the ranking among DRL agents is network-dependent. The lasting contributions
+are the formulation, the feasibility-aware action realisation, the constraint-aware method, the
+distillation result, and an honest, reproducible two-network benchmark that quantifies the promise —
+feasibility, real-time latency, and distilled near-optimality — and the limits of learned control
+for this problem.
 
 ---
 

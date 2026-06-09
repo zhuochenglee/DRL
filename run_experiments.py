@@ -102,6 +102,8 @@ def _make_cfg(network, noise):
 
 
 def run(args):
+	global OUT_DIR
+	OUT_DIR = Path("models/exports/paper") if args.network == "default" else Path("models/exports/paper_branched")
 	OUT_DIR.mkdir(parents=True, exist_ok=True)
 	cfg_eval = _make_cfg(args.network, 0.0)            # deterministic env for scoring
 	cfg_train = _make_cfg(args.network, args.train_noise)  # noisy env for DRL training
