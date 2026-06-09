@@ -360,6 +360,8 @@ seeds.*
 | **Constrained-SAC** | 13.36 ± 1.7 | 0.0 | 13.64 ± 2.6 | 0.1 | 0.842 | 4.9 ms |
 | Rule-based | 22.94 | 19.0 | 23.34 ± 0.5 | 19.0 | 0.804 | 2.5 ms |
 
+![Figure 1. Nominal 24-h electricity cost by method on the gun-barrel network (mean ± std over seeds); annotations show mean violation-hours.](../models/exports/paper/fig_cost_nominal.png)
+
 **Reading the table:**
 - **With feasibility secured, the model-based optimisers are near-optimal.** GA (continuous,
   open-loop), the DP reference, and MPC reach the lowest 24-h cost (≈4–5) with zero violations.
@@ -404,7 +406,10 @@ optimisation at all* at deployment, acting in milliseconds.) This is the genuine
 DRL value proposition for real-time / high-frequency dispatch, and here it comes *with*
 feasibility (though not yet with cost-optimality).
 
-### 6.5 Dispatch behaviour (Fig. 2 — `fig_dispatch.png`)
+### 6.5 Dispatch behaviour (Fig. 2)
+
+![Figure 2. Deterministic 24-h dispatch on the gun-barrel network — Distilled-MPC, Constrained-SAC, DP-oracle and MPC. Distilled-MPC tracks DP/MPC at low cumulative cost; Constrained-SAC keeps a larger pressure margin and sits above (the from-scratch premium).](../models/exports/paper/fig_dispatch.png)
+
 
 The 24-h curves (Distilled-MPC, Constrained-SAC, DP-oracle, MPC) show all four reproducing the
 model-based end-game: α≈1 (coast) through the off-peak start, a pre-charge of line-pack before the
@@ -414,7 +419,10 @@ is the clearest summary: **Distilled-MPC tracks DP/MPC almost exactly (all ≈5)
 Constrained-SAC keeps a larger pressure margin and so sits well above (≈13, the from-scratch cost
 premium) on the same qualitative shape.
 
-### 6.6 Robustness (Fig. 3 — `fig_robustness.png`)
+### 6.6 Robustness (Fig. 3)
+
+![Figure 3. Cost (mean ± std) under perturbed demand/price on the gun-barrel network; annotations show mean violation-hours.](../models/exports/paper/fig_robustness.png)
+
 
 Under perturbed demand/price, the from-scratch DRL agents are the **most feasible**: SAC averages
 0.0 and Constrained-SAC 0.1 violation-hours across the perturbed scenarios, whereas the open-loop
@@ -492,6 +500,10 @@ alongside the terminal-inventory gap.
   better. The Lagrangian/soft-margin settings tuned on the gun-barrel do not carry over, and
   re-tuning them for the larger network is left to future work. We report this honestly: the
   *ranking among DRL agents is network-dependent*, even though feasibility itself is robust.
+
+![Figure 4. Branched benchmark — nominal cost by method (left) and 24-h dispatch curves (right). The feasibility-aware DRL agents stay in-band; SAC is cost-competitive with the GA optimum.](../models/exports/paper_branched/fig_cost_nominal.png)
+
+![Figure 5. Branched benchmark — robustness (cost mean ± std and violation-hours) under perturbed demand/price.](../models/exports/paper_branched/fig_robustness.png)
 
 Net: the methodological contributions — the feasibility-aware action realisation, feasible
 from-scratch DRL, and MPC distillation — all transfer to the larger, parameter-realistic network;
