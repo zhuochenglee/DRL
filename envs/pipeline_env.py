@@ -60,6 +60,10 @@ class EnvConfig:
 	# NOT change the binary violation flag or the scoring penalty, so baselines are unaffected.
 	p_soft_margin: float = 8.0
 	w_soft_margin: float = 0.3
+	# Ablation switch: realize the discharge-ratio command against the compressor's feasible
+	# set (dead-band -> off). Disabling it lets the policy command the infeasible band, which
+	# the ablation in the paper shows brings envelope violations back.
+	enable_feasibility_realization: bool = True
 
 	# Optional fixed terminal linepack target (kg equiv.).
 	# If None, the target is derived from the initial steady-state pressures (default = 9000).
@@ -201,6 +205,7 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		self.w_surge = float(cfg.w_surge)
 		self.p_soft_margin = float(cfg.p_soft_margin)
 		self.w_soft_margin = float(cfg.w_soft_margin)
+		self.enable_feasibility_realization = bool(cfg.enable_feasibility_realization)
 
 		# Compressor power model parameters and map coefficients.
 		# Head and efficiency polynomial coefficients are aligned to the paper table style.
@@ -374,9 +379,10 @@ class PaperInspiredDynamicLinepackEnv(gym.Env):
 		alpha = float(np.clip(action[0], self.action_space.low[0], self.action_space.high[0]))
 		# Realize the command against the compressor's feasible set: a discharge ratio in
 		# the sub-minimum-speed dead band is physically infeasible and is taken as unit-off.
-		alpha = compressor.effective_discharge_ratio(
-			alpha, float(self.P_internal[self._source_down_node]), self.p0_ref,
-			float(self.K[self.source_pipe]), self._comp_params)
+		if self.enable_feasibility_realization:
+			alpha = compressor.effective_discharge_ratio(
+				alpha, float(self.P_internal[self._source_down_node]), self.p0_ref,
+				float(self.K[self.source_pipe]), self._comp_params)
 		hour = self.current_hour
 		demand = float(self._episode_demand[hour])                 # total hourly demand
 		demand_vec = self._spatial_frac[:, hour] * self._episode_demand[hour]  # per-node
