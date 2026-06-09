@@ -13,9 +13,11 @@ raw_data/
 ├── branched/                      # 4-node branched benchmark (paper §6.8, Table 2)
 │   ├── results_raw.csv
 │   ├── results_summary.csv
-│   ├── fig_cost_nominal.png
-│   ├── fig_dispatch.png
-│   └── fig_robustness.png
+│   └── fig_*.png
+├── gaslib/                        # GasLib-40-derived network (paper §6.9, Table 3)
+│   ├── results_raw.csv            #   native GasLib-40 pipe geometry, real demand chain
+│   ├── results_summary.csv
+│   └── fig_*.png
 └── sensitivity_w_penalty.csv      # terminal-line-pack penalty-weight sweep (SAC)
 ```
 

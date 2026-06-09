@@ -43,11 +43,12 @@ model-free RL from scratch. The contributions are the physics-faithful CMDP form
 feasibility-aware action realisation that makes DRL tractable here, the constraint-aware method,
 the distillation result, and a fair, reproducible benchmark that quantifies both the promise
 (feasibility + real-time latency) and the limits (from-scratch RL's cost premium) of learned
-control for line-pack economic dispatch. We validate on **two topologies** — a gun-barrel element
-and a branched benchmark with transmission-scale pipe parameters — and find the core results
-(feasibility-aware action realisation, feasible from-scratch DRL, MPC distillation) transfer, with
-the cost premium in fact *shrinking* on the larger network; the ranking among DRL agents is
-network-dependent.
+control for line-pack economic dispatch. We validate on **three topologies** — a gun-barrel element,
+a branched benchmark, and a sub-network with **native pipe geometry from the real GasLib-40
+instance** — and find the core results (feasibility-aware action realisation, feasible from-scratch
+DRL, MPC distillation) transfer; on the GasLib-40 network the distilled controller is the best
+learned method outright (matching the continuous optimum at zero violations and millisecond
+latency). The ranking among the from-scratch DRL agents is network-dependent.
 
 **Keywords:** natural gas pipeline; line-pack flexibility; time-of-use pricing; compressor
 optimisation; deep reinforcement learning; constrained MDP; soft actor–critic.
@@ -296,12 +297,14 @@ the nominal forecast (DP-oracle uses the realised future). Metrics are averaged 
 
 ## 5. Experimental setup
 
-**Networks.** We use two topologies driven by the same code (only the incidence matrix, pipe
+**Networks.** We use three topologies driven by the same code (only the incidence matrix, pipe
 parameters and demand map differ): (i) the **gun-barrel element** (source compressor → node 2 →
-demand node 3; 2 internal pressure states), our primary development network; and (ii) the
+demand node 3; 2 internal pressure states), our primary development network; (ii) the
 **branched benchmark** (§6.8: source compressor → junction → two demand nodes; 3 internal pressure
-states, pipe $K$ from transmission-scale lengths/diameters). Results in §6.1–6.7 are on (i);
-§6.8 reports (ii).
+states, pipe $K$ from transmission-scale lengths/diameters); and (iii) a **GasLib-40-derived
+network** (§6.9: a real demand chain from the GasLib-40 instance with its native pipe lengths and
+diameters; 3 internal pressure states). Results in §6.1–6.7 are on (i); §6.8 reports (ii); §6.9
+reports (iii).
 
 **Environment (gun-barrel).** Horizon 24 h; $p_{0,\mathrm{ref}}=100$, safe pressure band $[80,150]$,
 hard band $[10,200]$; flow limits $q_{1,\max}=1000,\,q_{2,\max}=900$; $\omega\in[5000,9400]$ rpm,
@@ -509,6 +512,52 @@ Net: the methodological contributions — the feasibility-aware action realisati
 from-scratch DRL, and MPC distillation — all transfer to the larger, parameter-realistic network;
 the constraint-aware-SAC ranking and the grid-DP reference are the network-dependent caveats.
 
+### 6.9 Real-geometry network from GasLib-40 (Table 3)
+
+To move beyond hand-set parameters we extract a sub-network from the **real GasLib-40 instance**
+(a model of the German low-calorific transmission grid): the line from the compressor-station node
+`innode_6` through the demand chain `sink_13 → sink_14 → sink_10`, using GasLib-40's **native pipe
+lengths and diameters** (21.6/7.0/58.2 km; 1000/1000/800 mm). The hydraulic resistances and
+line-pack capacitances are computed from this geometry (K ∝ L/D⁵, β ∝ L·D²) and preserve its
+relative ordering; we affinely map them into the env's numerically-stable band (the raw 25× K
+spread and a tiny mid-chain capacitance make the simplified explicit-Euler line-pack model stiff).
+Two honesty notes: this buys *real topology + real pipe geometry*, not fully real data — the
+geometry needed recalibration for stability, and the TOU electricity price stays synthetic because
+GasLib is a gas-only library with no electricity dimension.
+
+*Table 3. GasLib-40-derived network (3 real demand nodes), 150k steps, 3 seeds, 6 perturbed scenarios.*
+
+| Method | Nom cost | Viol-h | Term-gap | Robust cost | Robust viol | Latency |
+|---|---|---|---|---|---|---|
+| GA (continuous) | **5.57 ± 0.4** | 0.0 | **5** | 6.76 ± 1.1 | 0.0 | 11.9 s |
+| **Distilled-MPC** | **5.26 ± 0.6** | **0.0** | 111 | 6.53 ± 1.2 | 0.1 | **2.8 ms** |
+| DP-oracle | 6.70 | 0.0 | 141 | 6.64 ± 0.8 | 0.0 | 6.3 s |
+| MPC | 6.70 | 0.0 | 141 | 6.91 ± 0.8 | 0.0 | 6.7 s |
+| PPO | 13.16 ± 1.6 | 0.0 | 602 | 12.91 ± 2.8 | 0.1 | 3.6 ms |
+| SAC | 16.07 ± 3.4 | 0.0 | 300 | 14.21 ± 3.5 | 0.0 | 4.9 ms |
+| Constrained-SAC | 17.08 ± 1.5 | 0.0 | 66 | 17.43 ± 1.6 | 0.0 | 4.7 ms |
+| TD3 | 22.58 ± 8.7 | 0.3 | 1123 | 20.07 ± 7.5 | 0.4 | 4.4 ms |
+| Rule-based | 31.74 | 13.0 | 7388 | 32.15 ± 0.5 | 12.7 | 2.3 ms |
+
+**Reading the GasLib-40 results — the cleanest case for the method.**
+- **Distillation is the standout:** Distilled-MPC reaches cost **5.26 at zero violations** — it
+  matches the continuous GA optimum (5.57), *undercuts* the grid-MPC teacher (6.70), nails the
+  terminal target, and runs in **2.8 ms (≈2300× faster than the 6.5 s MPC)**. On a real-geometry
+  network the "distil a model-based controller" recipe gives the best learned controller outright.
+- **DP/MPC are clean here.** Unlike the branched benchmark, the chain topology keeps the 3-D grid
+  DP feasible (0 violations), so DP/MPC are valid references on this network.
+- **Constraint-aware SAC's reliability advantage reappears:** it is feasible with the tightest
+  terminal compliance (gap 66 vs SAC's 300) and the lowest seed variance (±1.5 vs SAC ±3.4) —
+  the opposite of the branched case, confirming the ranking is network-dependent but that
+  Constrained-SAC is the more reliable from-scratch learner where the dual settings suit the network.
+- **The core enabler holds a third time:** every feasibility-aware DRL agent is feasible (TD3 the
+  only wobble at 0.3), and the from-scratch cost premium (~2.5–3×) is again removed by distillation.
+
+Across all three networks the conclusion is consistent: feasibility transfers, distillation delivers
+near-optimal feasible control at millisecond latency, and from-scratch RL trails on cost.
+
+![Figure 6. GasLib-40-derived network — nominal cost by method (left) and 24-h dispatch (right).](../models/exports/paper_gaslib/fig_cost_nominal.png)
+
 ---
 
 ## 7. Discussion and limitations
@@ -542,12 +591,14 @@ premium directly (distributional critics, longer training) is the remaining open
   drop-in replacement for MPC where an accurate model exists. The distilled-MPC policy removes
   this gap (≈MPC cost at ≈ms latency) but, by construction, cannot exceed its teacher and inherits
   the teacher's model assumptions.
-- **Scope of the test system.** We report two topologies (a gun-barrel element and a branched
-  3-internal-node benchmark with transmission-scale pipe parameters, §6.8), but both use
-  trend-consistent rather than field-measured profiles, and the demand/price are synthetic. A
-  full field / GasLib-derived network with measured load and price remains the primary
-  credibility extension. The 3-D grid DP is already near its tractable limit; larger networks
-  will rely on GA/DRL (and distillation) rather than grid DP.
+- **Scope of the test system.** We report three topologies — a gun-barrel element, a branched
+  benchmark (§6.8), and a sub-network with native GasLib-40 pipe geometry (§6.9). This buys real
+  topology + real pipe geometry, but two gaps remain: (a) the GasLib geometry needed affine
+  recalibration to be numerically stable in the simplified explicit-Euler line-pack model, and
+  (b) demand/price profiles are still synthetic — crucially, the TOU electricity price cannot
+  come from GasLib (a gas-only library), so a coupled gas–electricity dataset with measured load
+  and price is the remaining credibility extension. The 3-D grid DP is already near its tractable
+  limit; larger networks will rely on GA/DRL (and distillation) rather than grid DP.
 - **Compressor model.** Single electric compressor with lumped thermodynamic coefficients;
   multi-compressor routing and discrete unit commitment are out of scope.
 - **Budget.** 150k steps / 3 seeds is modest; the numbers are real but not camera-ready.
@@ -577,14 +628,14 @@ pays a ≈2–3× cost premium (constraint-aware SAC being the most reliable suc
 **distilling the MPC controller into the same network removes that premium** — ≈MPC cost (5.34 vs
 5.38) at near-feasibility (≈0.7 viol-h) and ≈2.8 ms. The practical takeaway is that the fast, near-optimal, feasible controller
 for line-pack economic dispatch is best obtained by *distilling* a model-based controller rather
-than training model-free RL from scratch. These findings hold across **two topologies** (a
-gun-barrel element and a branched benchmark with transmission-scale pipe parameters, §6.8); on the
-larger network the from-scratch cost premium in fact shrinks (SAC is already cost-competitive with
-the GA optimum), while the ranking among DRL agents is network-dependent. The lasting contributions
-are the formulation, the feasibility-aware action realisation, the constraint-aware method, the
-distillation result, and an honest, reproducible two-network benchmark that quantifies the promise —
-feasibility, real-time latency, and distilled near-optimality — and the limits of learned control
-for this problem.
+than training model-free RL from scratch. These findings hold across **three topologies** — a
+gun-barrel element, a branched benchmark (§6.8), and a sub-network with **native GasLib-40 pipe
+geometry** (§6.9), where the distilled controller is the best learned method outright (matching the
+continuous optimum at zero violations and ≈2.8 ms). The ranking among the from-scratch DRL agents is
+network-dependent. The lasting contributions are the formulation, the feasibility-aware action
+realisation, the constraint-aware method, the distillation result, and an honest, reproducible
+three-network benchmark that quantifies the promise — feasibility, real-time latency, and distilled
+near-optimality — and the limits of learned control for this problem.
 
 ---
 

@@ -12,7 +12,7 @@ The problem: an **electric-driven compressor** can shift compression work in tim
 2. **Feasibility-aware action realisation (the key enabler).** The compressor's feasible set is *disconnected* (off, or on above a state-dependent minimum speed). A continuous policy otherwise keeps commanding the infeasible "dead band" and incurs ~6 envelope violations/day **regardless of training budget**. Realising dead-band commands as the unit staying off makes the action map onto the feasible set and takes every DRL agent to **zero** envelope violations.
 3. **Constrained (Lagrangian) SAC.** Optimises economics subject to a single, weight-free, normalised constraint cost, with a dual variable adapted by projected dual ascent — removing hand-tuned penalty weights.
 4. **MPC distillation closes the cost premium.** From-scratch DRL is feasible but ~2–3× the optimum cost. Distilling the MPC feedback law into a small MLP (behavioral cloning + DAgger) yields a policy that **matches MPC cost at ~ms latency** (the from-scratch premium is removed).
-5. **Two-network benchmark.** Rule-based, GA, DP, receding-horizon MPC, SAC/TD3/PPO, Constrained-SAC and Distilled-MPC, all on one objective, with multi-seed statistics, robustness under perturbation, and an honest discussion. Validated on a gun-barrel element **and** a branched benchmark with transmission-scale pipe parameters; the env/DP/MPC/distillation are all generalised to arbitrary single-compressor topologies (N-D DP).
+5. **Three-network benchmark.** Rule-based, GA, DP, receding-horizon MPC, SAC/TD3/PPO, Constrained-SAC and Distilled-MPC, all on one objective, with multi-seed statistics, robustness under perturbation, and an honest discussion. Validated on (i) a gun-barrel element, (ii) a branched benchmark, and (iii) a sub-network with **native pipe geometry from the real GasLib-40 instance**; the env/DP/MPC/distillation are all generalised to arbitrary single-compressor topologies (N-D DP).
 
 ## Results (real, reduced-but-real: 150k steps, 3 seeds, 6 perturbed scenarios)
 
@@ -35,17 +35,29 @@ The problem: an **electric-driven compressor** can shift compression work in tim
 | DP / MPC (3-D grid) | 6.02 | 2.0 | 128 | 6.8 s |
 | Constrained-SAC | 14.40 | 0.3 | 357 | 4.6 ms |
 
-Honest caveats (in the paper): the constraint-aware-SAC ranking is network-dependent; the 3-D grid DP/MPC are grid-limited (~2 violations) so GA is the clean reference on the branch; TD3 degenerates (never compresses → depletes line-pack), which the terminal-gap column exposes.
+**GasLib-40-derived network** (real pipe geometry) — the cleanest case for the method:
+
+| Method | Cost | Viol-h | Term-gap | Latency |
+|---|---|---|---|---|
+| GA (optimum ref) | 5.57 | 0 | 5 | 11.9 s |
+| **Distilled-MPC** | **5.26** | **0** | 111 | **2.8 ms** |
+| DP / MPC | 6.70 | 0 | 141 | 6.5 s |
+| Constrained-SAC | 17.08 | 0 | 66 | 4.7 ms |
+| SAC | 16.07 | 0 | 300 | 4.9 ms |
+
+On the real-geometry network the distilled controller is the best learned method outright (matches the GA optimum, beats MPC, 0 violations, ms latency).
+
+Honest caveats (in the paper): the constraint-aware-SAC ranking is network-dependent (it wins on the gun-barrel and GasLib nets, loses on the branched one); the branched 3-D grid DP/MPC are grid-limited (~2 violations) so GA is the clean reference there; TD3 degenerates (never compresses → depletes line-pack), which the terminal-gap column exposes; the GasLib geometry needed affine recalibration for numerical stability and the TOU price stays synthetic (GasLib is gas-only).
 
 ## What's in this PR
 
 - `envs/compressor.py` — shared compressor physics (Eqs. 7–11) + feasibility-aware action realisation.
-- `envs/pipeline_env.py` — topology-general dynamic line-pack CMDP; `branched_benchmark_config()`.
+- `envs/pipeline_env.py` — topology-general dynamic line-pack CMDP; `branched_benchmark_config()`, `gaslib_benchmark_config()`.
 - `DP.py` — DP reference (2-D fast path + general N-D); `baselines.py` — rule / GA / MPC + evaluators.
 - `constrained_sac.py` — Lagrangian SAC; `distill_mpc.py` — BC + DAgger MPC distillation.
 - `run_experiments.py` — unified harness (`--network {default,branched}`, multi-seed, figures + CSVs).
 - `paper/draft.md`, `paper/draft.docx` — the paper draft; `paper/make_table.py` — table generator.
-- Results: `models/exports/paper/` (gun-barrel) and `models/exports/paper_branched/`.
+- Results: `models/exports/paper/` (gun-barrel), `models/exports/paper_branched/`, `models/exports/paper_gaslib/`; all raw data bundled in `raw_data/` (+ `raw_data.zip`).
 
 ## Reproduce
 
@@ -53,6 +65,7 @@ Honest caveats (in the paper): the constraint-aware-SAC ranking is network-depen
 python run_experiments.py --quick                              # fast plumbing check
 python run_experiments.py --steps 150000 --seeds 3 --perturb 6 # gun-barrel
 python run_experiments.py --network branched --steps 150000 --seeds 3 --dagger 12
+python run_experiments.py --network gaslib   --steps 150000 --seeds 3 --dagger 12  # GasLib-40 geometry
 python paper/make_table.py                                     # regenerate the results table
 ```
 
