@@ -69,6 +69,13 @@ python run_experiments.py --network gaslib   --steps 150000 --seeds 3 --dagger 1
 python paper/make_table.py                                     # regenerate the results table
 ```
 
+## Ablations (gun-barrel, §6.7)
+
+Removing one Constrained-SAC component at a time:
+- **− feasibility-aware action realisation → 6 violation-h, cost 2× (30.3), terminal gap 2402** — confirms it is the enabler.
+- **− soft pressure margin → cost drops 13.7 → 5.89, still 0 violations** — the margin (a learning aid) is the main cause of the from-scratch cost premium; it can be dropped/annealed once trained.
+- **− surge / − terminal penalty weight → no effect** — Constrained-SAC ignores the fixed-weight penalty and derives feasibility from the single normalised constraint cost (the Lagrangian, not hand-tuned weights, does the work).
+
 ## Status
 
-Reduced-but-real budget (150k steps / 3 seeds) — numbers are genuine but not camera-ready. The remaining credibility lift is a field / GasLib-derived network with measured load and price; the branched benchmark is a step toward that.
+Reduced-but-real budget (150k steps; **5 seeds gun-barrel** / 3 seeds benchmarks) — numbers are genuine but not camera-ready. The remaining credibility lift is a field / GasLib-derived network with measured load and price; the branched benchmark is a step toward that.

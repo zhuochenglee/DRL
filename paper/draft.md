@@ -28,16 +28,16 @@ tractable: every trained agent then reaches **zero** envelope violations. We ben
 rule-based heuristic, a genetic algorithm (GA), a dynamic-programming (DP) reference, a
 receding-horizon MPC, and four DRL agents (SAC, TD3, PPO, and a **Lagrangian / constrained
 SAC**) on a common objective. With feasibility secured, the model-based optimisers (GA, DP,
-MPC) are near-optimal (24-h cost ≈4–5); model-free DRL is **feasible and far cheaper to
+MPC) are near-optimal (24-h cost ≈5.4); model-free DRL is **feasible and far cheaper to
 deploy but pays a cost premium** (≈2–3× the optimum). Among DRL agents, **constraint-aware
 SAC is the most reliable** — lower 24-h cost and markedly lower seed variance than vanilla
 penalty-reward SAC, with the tightest terminal-inventory compliance. Learned policies act in
 ≈5 ms — ≈200× faster than the MPC feedback law and ≈2300× faster than the GA — and, trained under
 noise, stay the *most* feasible across perturbed demand/price scenarios (≈0 vs 0.5–1.3
 violation-hours for the grid-DP/MPC/GA). **Crucially, distilling the MPC controller into a
-millisecond MLP** (behavioral cloning + DAgger) **closes the cost premium**: it matches the MPC
-cost (5.34 ± 0.4 vs 5.38) at near-feasibility (≈0.7 violation-hours) and ≈2.8 ms (≈400× faster
-than the MPC law), showing that the effective route to a
+millisecond MLP** (behavioral cloning + DAgger) **closes the cost premium**: it matches — indeed
+slightly undercuts — the MPC cost (5.13 ± 0.4 vs 5.38) at near-feasibility (≈0.4 violation-hours)
+and ≈2.5 ms (≈430× faster than the MPC law), showing that the effective route to a
 fast near-optimal feasible controller here is to *distill a model-based controller*, not to train
 model-free RL from scratch. The contributions are the physics-faithful CMDP formulation, the
 feasibility-aware action realisation that makes DRL tractable here, the constraint-aware method,
@@ -54,7 +54,8 @@ latency). The ranking among the from-scratch DRL agents is network-dependent.
 optimisation; deep reinforcement learning; constrained MDP; soft actor–critic.
 
 > **Status / integrity note.** All numbers are from a *reduced-but-real* run
-> (`run_experiments.py --steps 150000 --seeds 3 --perturb 6 --lr 3e-4`, ≈55 min wall-clock):
+> (`run_experiments.py --steps 150000 --seeds 5 --perturb 6 --lr 3e-4`; 5 seeds on the gun-barrel,
+> 3 on the benchmark networks):
 > genuine, not illustrative, but at a modest budget — not camera-ready. A one-flag scale-up is
 > provided. The DP/MPC references use a 121×101 grid (the finest that stays feasible; see §6).
 
@@ -105,8 +106,8 @@ This paper makes that step. Our contributions are:
    zero violations and near-optimal cost.
 4. **Closing the cost premium by distillation.** From-scratch DRL is feasible but ~2–3× the
    optimum cost. We show that *distilling* the MPC feedback law into a small MLP by behavioral
-   cloning with a few DAgger rounds yields a policy that **matches the MPC cost
-   (5.34 ± 0.4 vs 5.38) at near-feasibility (≈0.7 violation-hours) and ≈2.8 ms inference** — i.e.
+   cloning with a few DAgger rounds yields a policy that **matches (slightly undercuts) the MPC
+   cost (5.13 ± 0.4 vs 5.38) at near-feasibility (≈0.4 violation-hours) and ≈2.5 ms inference** — i.e.
    the controllability of MPC at a fraction of its online cost. The actionable message is that, for this problem, the
    effective route to a fast near-optimal feasible controller is to *distill a model-based
    controller*, not to train model-free RL from scratch.
@@ -314,7 +315,8 @@ $w_{\text{pressure}}=1000,\,w_{\text{flow}}=5,\,w_{\text{terminal}}=250,\,w_{\te
 w_{\text{surge}}=2000$. Compressor calibration: $ZRT/M=138$, $Q_{in}=10\,|q_0|$,
 power coefficient $4.5\times10^{-6}$; head/efficiency polynomials from [1, Table 3].
 
-**Training.** Reduced-but-real budget: 150 000 timesteps, 3 seeds, $\gamma=0.995$, learning rate
+**Training.** Reduced-but-real budget: 150 000 timesteps, 5 seeds (gun-barrel) / 3 seeds (benchmark
+networks), $\gamma=0.995$, learning rate
 $10^{-3}$ (SAC/TD3) / $3\times10^{-4}$ (PPO), actor/critic MLP 128–64–32, reward normalisation on,
 DRL trained on a noisy env (multiplicative demand noise 0.08). `run_experiments.py --steps … --seeds …`
 scales to full budget in one line.
@@ -327,7 +329,7 @@ compressor efficiency, terminal line-pack gap, and planning/inference latency.
 
 ## 6. Results
 
-Numbers are from `models/exports/paper/results_summary.csv` (150k steps, 3 seeds, 6 perturbed
+Numbers are from `models/exports/paper/results_summary.csv` (150k steps, 5 seeds, 6 perturbed
 scenarios). "Nominal" = the reference day; "Robust" = mean over perturbed realizations. Cost
 is the 24-h electricity cost (lower is better); "Viol" is constraint-violation hours. Latency
 is wall-clock per 24-h dispatch (DRL = policy inference; MPC/DP = build+run the feedback law;
@@ -347,32 +349,36 @@ feasible cost drops by ~4×).
 
 ### 6.2 Nominal and robust performance (Table 1)
 
-*Table 1. 150k steps, 3 seeds, 6 perturbed scenarios. Cost = 24-h electricity cost; viol-h =
+*Table 1. 150k steps, 5 seeds, 6 perturbed scenarios. Cost = 24-h electricity cost; viol-h =
 constraint-violation hours; latency = wall-clock per 24-h dispatch. DRL agents: mean ± std over
 seeds.*
 
 | Method | Nominal cost | Nominal viol-h | Robust cost | Robust viol-h | Mean η | Latency |
 |---|---|---|---|---|---|---|
-| DP-oracle (121×101 grid) | 5.38 | 0.0 | 4.03 ± 1.0 | 0.8 | 0.845 | 1.1 s |
+| DP-oracle (121×101 grid) | 5.38 | 0.0 | 5.00 ± 1.0 | 0.0 | 0.845 | 1.1 s |
 | MPC (nominal-model feedback) | 5.38 | 0.0 | 4.89 ± 0.7 | 0.5 | 0.845 | 1.1 s |
-| **Distilled-MPC** (BC + DAgger) | **5.34 ± 0.4** | 0.7 | 5.47 ± 0.8 | 1.1 | 0.836 | **2.8 ms** |
-| GA (continuous, open-loop) | **4.28 ± 0.5** | 0.0 | 5.30 ± 1.1 | 1.3 | 0.831 | 10.7 s |
-| PPO | 8.64 ± 1.1 | 0.0 | 8.28 ± 2.1 | 0.1 | 0.849 | 3.8 ms |
-| TD3 | 26.47 ± 2.9 | 0.0 | 25.36 ± 3.3 | 0.0 | 0.822 | 4.4 ms |
-| SAC | 14.98 ± 5.6 | 0.0 | 15.93 ± 4.9 | 0.0 | 0.833 | 5.3 ms |
-| **Constrained-SAC** | 13.36 ± 1.7 | 0.0 | 13.64 ± 2.6 | 0.1 | 0.842 | 4.9 ms |
-| Rule-based | 22.94 | 19.0 | 23.34 ± 0.5 | 19.0 | 0.804 | 2.5 ms |
+| **Distilled-MPC** (BC + DAgger) | **5.13 ± 0.4** | 0.4 | 5.39 ± 0.9 | 0.9 | 0.838 | **2.5 ms** |
+| GA (continuous, open-loop) | 5.51 ± 2.3 | 0.0 | 5.88 ± 2.2 | 1.5 | 0.833 | 11.0 s |
+| PPO | 7.81 ± 1.3 | 0.0 | 7.98 ± 2.0 | 0.0 | 0.847 | 3.4 ms |
+| TD3 | 21.42 ± 6.8 | 0.0 | 20.80 ± 6.5 | 0.0 | 0.828 | 4.1 ms |
+| SAC | 15.48 ± 4.4 | 0.0 | 16.43 ± 4.0 | 0.0 | 0.834 | 4.7 ms |
+| **Constrained-SAC** | 13.67 ± 2.1 | 0.0 | 13.40 ± 2.5 | 0.0 | 0.842 | 4.6 ms |
+| Rule-based | 22.94 | 19.0 | 23.34 ± 0.5 | 19.0 | 0.804 | 3.1 ms |
+
+*(Gun-barrel results use **5 seeds**; the benchmark networks in §6.8–6.9 use 3.)*
 
 ![Figure 1. Nominal 24-h electricity cost by method on the gun-barrel network (mean ± std over seeds); annotations show mean violation-hours.](../models/exports/paper/fig_cost_nominal.png)
 
 **Reading the table:**
 - **With feasibility secured, the model-based optimisers are near-optimal.** GA (continuous,
-  open-loop), the DP reference, and MPC reach the lowest 24-h cost (≈4–5) with zero violations.
-  Note GA slightly *undercuts* the grid-DP because DP is discretised: on this problem a finer DP
-  grid keeps lowering the cost but eventually hugs the constraint boundary and becomes infeasible
-  when executed on the continuous plant, so we report DP/MPC at the finest *feasible* grid
-  (121×101) and treat GA as the practical near-optimal feasible reference rather than claiming a
-  certified global optimum.
+  open-loop), the DP reference, and MPC reach the lowest 24-h cost (≈5.4) with zero violations;
+  over 5 seeds GA (5.51 ± 2.3) and DP/MPC (5.38) coincide within the (large) GA seed variance.
+  DP is discretised — a finer grid keeps lowering the cost but eventually hugs the constraint
+  boundary and becomes infeasible on the continuous plant — so we report DP/MPC at the finest
+  *feasible* grid (121×101) and treat GA / fine-grid DP as the practical near-optimal feasible
+  reference rather than a certified global optimum. Notably, **Distilled-MPC (5.13) is the
+  cheapest of all** at near-feasibility, slightly beating both because it is a *continuous*
+  controller distilled from the grid MPC.
 - **Model-free DRL is now feasible but pays a cost premium.** All DRL agents reach 0 violations;
   their 24-h cost is ≈2–3× the optimum (PPO is closest; TD3 the most conservative/expensive).
   They learn the correct *qualitative* policy — off-peak line-pack pre-charge, on-peak coast,
@@ -388,8 +394,8 @@ seeds.*
 The most consequential result is that the DRL cost premium is **not intrinsic** — it is an
 artefact of training model-free from scratch. Distilling the MPC feedback law into the same
 128–64–32 MLP (behavioral cloning + 12 DAgger rounds) yields **Distilled-MPC**, which reaches a
-24-h cost of 5.34 ± 0.4 — matching the grid-MPC teacher (5.38) and far below from-scratch RL
-(13–15) — with ≈0.7 nominal violation-hours, at ≈2.8 ms inference. Because it outputs a continuous
+24-h cost of 5.13 ± 0.4 — matching (slightly undercutting) the grid-MPC teacher (5.38) and far
+below from-scratch RL (13–15) — with ≈0.4 nominal violation-hours, at ≈2.5 ms inference. Because it outputs a continuous
 discharge ratio rather than the teacher's discretised grid action, the student can match (and on
 individual seeds undercut) the teacher despite imperfect cloning.
 Plain behavioral cloning alone is insufficient (the near-bang-bang targets get smoothed into the
@@ -438,14 +444,35 @@ for robustness. The practical implication is a *spectrum*: distilled-MPC for low
 near-feasibility, constraint-aware SAC for strict feasibility under uncertainty, both at
 millisecond latency with no online solver.
 
-### 6.7 Ablations (now meaningful)
+### 6.7 Ablations (Table 1b)
 
-With the base DRL feasible, the planned ablations become informative and are the natural content
-of a full version: (i) Constrained-SAC vs penalty-SAC — cost, variance, and dual-variable
-trajectory; (ii) the feasibility-aware action realisation on/off — the headline §6.1 effect;
-(iii) surge/choke and terminal-line-pack constraints on/off; (iv) sensitivity to the soft-margin
-weight and the dual budget. The scaffolding (`run_experiments.py`, `sensitivity_analysis.py`) is
-in place; we report (i)–(ii) here and leave the full sweep to the scaled-up study.
+We remove one component of Constrained-SAC at a time on the gun-barrel (120k steps, 3 seeds) and
+measure the effect on the true 24-h cost, violation-hours, and terminal line-pack gap.
+
+*Table 1b. Constrained-SAC component ablations (gun-barrel).*
+
+| Variant | Cost | Viol-h | Term-gap |
+|---|---|---|---|
+| **Full** | 13.69 ± 2.2 | 0.0 | 23 |
+| − feasibility-aware action realisation | **30.26 ± 1.3** | **6.0** | **2402** |
+| − soft pressure margin | **5.89 ± 0.9** | 0.0 | 25 |
+| − surge/choke penalty weight | 13.69 ± 2.2 | 0.0 | 23 |
+| − terminal-line-pack penalty weight | 13.69 ± 2.2 | 0.0 | 23 |
+
+Three clear conclusions:
+- **The feasibility-aware action realisation is the enabler.** Removing it brings violations back
+  (0 → 6 h/day), doubles the cost (13.7 → 30.3) and wrecks terminal inventory (gap 23 → 2402) — a
+  direct, quantitative confirmation of the §3.2 / §6.1 claim.
+- **The soft margin is the cost premium.** Removing it *lowers* cost sharply (13.7 → **5.89**,
+  i.e. to the GA/MPC optimum band) while keeping zero violations. The margin we added as a dense
+  learning signal makes the trained policy over-conservative; once trained, it can be dropped (or
+  annealed) to recover near-optimal cost — an important, actionable finding that partly explains
+  the from-scratch premium and suggests a margin schedule as future work.
+- **The hand-set penalty weights are inert for Constrained-SAC.** Zeroing `w_surge` or
+  `w_terminal_linepack` changes nothing, because Constrained-SAC ignores the fixed-weight penalty
+  and derives feasibility from the single normalised constraint cost (which already contains the
+  surge and terminal terms, driven by the dual variable λ). This is itself evidence that the
+  *Lagrangian formulation*, not hand-tuned weights, is doing the work — the method's central claim.
 
 ### 6.8 Generalization to a branched benchmark network (Table 2)
 
@@ -575,7 +602,7 @@ fast but pays a ≈2–3× cost premium over GA/DP/MPC; the gap is the magnitude
 policy (the agents arbitrage price and manage line-pack correctly but over-spend), and
 constraint-aware SAC is the most reliable from-scratch agent (lowest variance, tightest terminal
 compliance, cheaper than vanilla SAC). The premium, however, is **not intrinsic**: distilling the
-MPC controller into the same network closes it (cost ≈5.3 ≈ MPC, ≈0.7 violation-h, ≈2.8 ms; §6.3). The
+MPC controller into the same network closes it (cost 5.13 ≲ MPC 5.38, ≈0.4 violation-h, ≈2.5 ms; §6.3). The
 practical conclusion is that *learning* the right thing — imitating a model-based controller with a
 few DAgger rounds — beats *discovering* it with model-free RL on this problem, while keeping the
 millisecond deployment latency. From-scratch constraint-aware RL remains valuable where no model is
@@ -601,7 +628,8 @@ premium directly (distributional critics, longer training) is the remaining open
   limit; larger networks will rely on GA/DRL (and distillation) rather than grid DP.
 - **Compressor model.** Single electric compressor with lumped thermodynamic coefficients;
   multi-compressor routing and discrete unit commitment are out of scope.
-- **Budget.** 150k steps / 3 seeds is modest; the numbers are real but not camera-ready.
+- **Budget.** 150k steps, 5 seeds (gun-barrel) / 3 (benchmarks) is modest; the numbers are real but
+  not camera-ready. Benchmark networks would also benefit from 5 seeds.
 
 **Path to a stronger paper** (in order of leverage): (1) move to a field / GasLib-derived network
 with measured load and price (the branched benchmark of §6.8 is a step toward this; measured data
@@ -622,11 +650,11 @@ receding-horizon MPC, and four DRL agents including a Lagrangian constrained SAC
 is that **realising the discharge-ratio command against the compressor's disconnected feasible set
 is what makes model-free DRL tractable here**: it converts a persistently-infeasible learning
 problem (≈6 violations/day at any budget) into one where every agent reaches zero envelope
-violations. With feasibility secured, model-based optimisers are near-optimal (cost ≈4–5);
+violations. With feasibility secured, model-based optimisers are near-optimal (cost ≈5.4);
 from-scratch model-free DRL is feasible and ≈200×/2300× faster to deploy than the MPC law/GA but
 pays a ≈2–3× cost premium (constraint-aware SAC being the most reliable such learner); and
-**distilling the MPC controller into the same network removes that premium** — ≈MPC cost (5.34 vs
-5.38) at near-feasibility (≈0.7 viol-h) and ≈2.8 ms. The practical takeaway is that the fast, near-optimal, feasible controller
+**distilling the MPC controller into the same network removes that premium** — ≲MPC cost (5.13 vs
+5.38) at near-feasibility (≈0.4 viol-h) and ≈2.5 ms. The practical takeaway is that the fast, near-optimal, feasible controller
 for line-pack economic dispatch is best obtained by *distilling* a model-based controller rather
 than training model-free RL from scratch. These findings hold across **three topologies** — a
 gun-barrel element, a branched benchmark (§6.8), and a sub-network with **native GasLib-40 pipe

@@ -18,6 +18,7 @@ raw_data/
 │   ├── results_raw.csv            #   native GasLib-40 pipe geometry, real demand chain
 │   ├── results_summary.csv
 │   └── fig_*.png
+├── ablations.csv                  # Constrained-SAC component ablations (paper §6.7, Table 1b)
 └── sensitivity_w_penalty.csv      # terminal-line-pack penalty-weight sweep (SAC)
 ```
 
