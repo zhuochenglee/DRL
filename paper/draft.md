@@ -127,32 +127,89 @@ problem.
 
 ## 2. Related work and positioning
 
-**DRL for gas-network/compressor control.** Liu et al. [1] formulate steady-state pipeline
-optimisation as a one-step MDP solved by an auto-tuned SAC, comparing against GA and DP.
-Chen et al. [2] apply DRL to *predictive demand-response management* in gas pipelines.
-These establish DRL for gas control but either freeze the dynamics (one-step) or target
-demand response rather than TOU-price-driven compressor economics with a detailed
-operating envelope.
+Our work draws on five strands: (i) model-based optimisation of gas transmission networks,
+(ii) line-pack flexibility and gas–power coupling, (iii) deep reinforcement learning (DRL) for
+gas and energy systems, (iv) safe / constrained RL, and (v) imitation learning and policy
+distillation. We review each and then state the gap we fill.
 
-**Line-pack as flexibility/storage.** The use of line-pack as a short-term store for
-price arbitrage and balancing is well established in the *model-based/economics* literature
-[3,4]: linepack valuation under price uncertainty and the operation of coupled
-gas–electricity networks with line-pack. These works are LP/valuation or offline-optimisation
-in nature and rely on accurate models; they do not learn a real-time feedback policy under
-nonlinear compressor maps and uncertainty.
+### 2.1 Model-based optimisation of gas transmission networks
 
-**Integrated electricity–gas system (IEGS) dispatch with DRL.** A large, active body of
-work uses SAC/PPO/multi-agent DRL for IEGS economic dispatch under TOU pricing [5,6].
-These co-optimise both networks but typically represent the gas side with simplified or
-algebraic constraints and omit the compressor characteristic map and surge/choke envelope.
+Optimising compressor operation in gas pipelines is a classical, hard problem: the steady flow
+relations are nonlinear (Weymouth-type, with the friction factor and compressibility), and adding
+compressors makes the feasible set non-convex, yielding mixed-integer nonlinear programs (MINLPs)
+[2,3]. Comprehensive treatments of the modelling and solution methods are given by Ríos-Mercado and
+Borraz-Sánchez [2], the *Evaluating Gas Network Capacities* monograph [3], and the nomination-
+validation framework of Pfetsch et al. [4]; the GasLib library [5] provides standard benchmark
+instances, several of which we draw geometry from (§6.9). Solution techniques range from dynamic
+programming [6] and reduced-gradient/GP methods to modern MINLP and transient optimal control
+[7,8]. These methods are accurate but require a full model and forecast and are computationally
+heavy online — exactly the cost the present paper tries to amortise with a learned controller, while
+using DP/MPC as references.
 
-**Our niche.** We sit at the intersection but occupy the gap each leaves open: a
-*single-pipeline, dynamic, TOU-priced* dispatch that (i) keeps the detailed compressor
-physics of [1], (ii) treats the operating envelope as hard *feasibility* constraints rather
-than economics, and (iii) learns a constraint-aware real-time policy whose value we quantify
-against DP/MPC and under uncertainty. To our knowledge this specific combination —
-physics-faithful compressor envelope + line-pack/TOU economics + constrained DRL with a
-DP-optimum and MPC benchmark — has not been reported.
+### 2.2 Line-pack flexibility, gas–power coupling, and economic dispatch
+
+The mass of gas stored in a pipe ("line-pack") is a fast, distributed short-term store; its value
+for balancing and price arbitrage is well established in the economics and model-based literature
+[10,14]. With the growth of gas-fired generation and electric compressor drivers, the gas and power
+systems are increasingly co-optimised: integrated/coordinated scheduling of electricity and gas
+networks [11,12,13] and explicit line-pack-aware operation [14] quantify this flexibility, typically
+via LP/MILP/NLP over a transient or quasi-steady model. These works establish the *economic
+opportunity* we exploit, but they are offline optimisations that rely on accurate models and do not
+learn a real-time feedback policy under a nonlinear compressor map and uncertainty.
+
+### 2.3 Deep reinforcement learning for gas networks
+
+DRL brings a model-free, millisecond-at-deployment alternative. Liu et al. [1] formulate
+*steady-state* pipeline optimisation as a one-step MDP solved by an auto-tuned soft actor–critic,
+comparing against GA and DP — the work we extend. Chen et al. [15] apply DRL to predictive
+*demand-response* management in gas pipelines, and DRL has been used for compressor start-up in
+underground gas storage [16]. These establish DRL for gas control but either freeze the dynamics
+(one-step) or target demand response, rather than TOU-price-driven *dynamic* compressor economics
+with a detailed operating envelope.
+
+### 2.4 DRL for integrated and multi-energy systems under price signals
+
+A large, active body of work applies DRL — SAC, PPO, and multi-agent variants — to integrated
+electricity–gas and multi-energy economic dispatch under time-of-use pricing and uncertainty
+[18,19,20], and more broadly to demand response and energy arbitrage [17,21,22]; see Perera and
+Kamalaruban [18] for a survey. These co-optimise multiple carriers but typically represent the gas
+side with simplified or algebraic constraints and omit the compressor characteristic map and the
+surge/choke envelope — the physics that this paper keeps and shows materially shapes the feasible
+policy. Our DRL agents build on the standard algorithm family: DQN [24], DDPG [25], PPO [26], SAC
+[27], and TD3 [28], implemented with Stable-Baselines3 [29].
+
+### 2.5 Safe and constrained reinforcement learning
+
+Enforcing operational limits places us in safe/constrained RL [30,31]. The constrained-MDP view
+[30] underlies Lagrangian methods that adapt a dual variable on a constraint cost — reward-
+constrained policy optimisation [33], PID-Lagrangian control of the multiplier [34] — and
+trust-region projections such as constrained policy optimisation [32]; alternatives include safety
+layers that project actions to a feasible set [35] and Lyapunov-based approaches [37], with
+Safety-Gym [36] as a common benchmark. Our Constrained-SAC is a Lagrangian SAC in this lineage; what
+is specific here is that one part of the feasibility — the compressor's *disconnected* feasible
+action set — is best handled not by a penalty at all but by **realising the action against the
+feasible set** (§3.2), a discrete-structure analogue of an action-projection safety layer that we
+find is the decisive enabler.
+
+### 2.6 Imitation learning and policy distillation
+
+Finally, we use imitation learning to remove the from-scratch cost premium. Behavioral cloning is
+brittle under distribution shift; DAgger [38] corrects this by relabelling the states the learner
+visits, and policy distillation [39] compresses a teacher policy into a smaller/faster network;
+GAIL [40] and the survey of Hussein et al. [41] situate these methods. We distil a model predictive
+controller [42,43] — itself the certainty-equivalent DP feedback law — into a millisecond policy,
+combining behavioral cloning with DAgger to handle the dead-band-induced discontinuity.
+
+### 2.7 Positioning
+
+We occupy the gap each strand leaves open: a *dynamic, TOU-priced, single-compressor* line-pack
+dispatch that (i) keeps the detailed compressor physics and operating envelope of [1] as hard
+*feasibility* constraints rather than economics; (ii) makes model-free DRL tractable on it via the
+feasibility-aware action realisation; (iii) learns a constraint-aware policy and, crucially, a
+*distilled-MPC* policy whose value we quantify against DP, MPC and GA on three networks (including
+real GasLib-40 geometry) and under demand/price uncertainty. To our knowledge this combination —
+physics-faithful compressor envelope + line-pack/TOU economics + constraint-aware and distilled DRL
+with a DP/MPC benchmark — has not been reported.
 
 ---
 
@@ -160,33 +217,46 @@ DP-optimum and MPC benchmark — has not been reported.
 
 ### 3.1 Network and hydraulics
 
+> 🖼️ **[INSERT FIGURE 1 — System schematic.]** A 3-panel schematic of the test networks: (a) the
+> gun-barrel element (source compressor → node 2 → demand node 3); (b) the branched benchmark
+> (junction splitting to two demand nodes); (c) the GasLib-40-derived chain (innode_6 → sink_13 →
+> sink_14 → sink_10). Annotate the source compressor, pipes ($K_e$), node line-pack ($\beta_i$),
+> and demand nodes. *(Suggested: draw from the incidence matrices in `envs/pipeline_env.py`.)*
+
 We consider a gun-barrel element: a source node, an internal node (2), and a demand node
 (3), connected by two pipes; an electric compressor at the source sets the source pressure
 through a discharge ratio. Edge flow follows the paper's Weymouth-type steady relation,
 expressed on squared pressures,
 
-$$ q_e = \mathrm{sgn}(\Delta(p^2)_e)\,\sqrt{|\Delta(p^2)_e| / K_e}, $$
+$$ q_e = \mathrm{sgn}(\Delta(p^2)_e)\,\sqrt{|\Delta(p^2)_e| / K_e}, \tag{1} $$
 
-with the incidence matrix mapping edge flows to nodal balances. The compressor discharge
-ratio $\alpha\in[1,2]$ is the control; the source pressure is $p_0 = p_{0,\mathrm{ref}}\,\alpha$.
+with the incidence matrix $\mathbf{A}$ mapping edge flows to nodal balances, $\mathbf{A}\mathbf{q} =
+\mathbf{Q}_s$. The compressor discharge ratio $\alpha\in[1,2]$ is the control; the source pressure
+is $p_0 = p_{0,\mathrm{ref}}\,\alpha$.
+
+> ✒️ **[EQUATION — number as Eq. (1), done.]** Equation (1) is the Weymouth edge-flow relation. For
+> submission also write out, as a numbered equation, the friction-factor / nodal-balance pair
+> ($\mathbf{A}\mathbf{q}=\mathbf{Q}_s$, $\mathbf{A}_P^\top \mathbf{p}^2 = \phi(\mathbf{u})$) following
+> Eqs. (1)–(6),(16) of [1].
 
 ### 3.2 Compressor characteristics and operating envelope
 
 The centrifugal compressor follows Liu et al. [1, Eqs. 7–11]. The adiabatic head from the
-discharge ratio (Eq. 9) is
+discharge ratio is
 
-$$ H = \frac{ZRT}{M}\,\frac{\kappa}{\kappa-1}\Big[\alpha^{(\kappa-1)/\kappa}-1\Big], $$
+$$ H = \frac{ZRT}{M}\,\frac{\kappa}{\kappa-1}\Big[\alpha^{(\kappa-1)/\kappa}-1\Big], \tag{2} $$
 
-(with $ZRT/M$ lumped into a single coefficient). The head and efficiency maps (Eqs. 7–8)
-share the normalised inlet-flow coordinate $\phi = Q_{in}/\omega$:
+(with $ZRT/M$ lumped into a single coefficient). The head and efficiency maps share the normalised
+inlet-flow coordinate $\phi = Q_{in}/\omega$:
 
 $$ H/\omega^2 = A_H + B_H\phi + C_H\phi^2 + D_H\phi^3, \qquad
-   \eta = A_E + B_E\phi + C_E\phi^2 + D_E\phi^3, $$
+   \eta = A_E + B_E\phi + C_E\phi^2 + D_E\phi^3, \tag{3} $$
 
 with the Table-3 coefficients of [1]. Given $H$ (from $\alpha$) and $Q_{in}$ (from the
-source-pipe flow), Eq. 7 is a cubic in $\phi$; its physically valid root yields the speed
-$\omega = Q_{in}/\phi$, and Eq. 8 gives the efficiency. Power follows Eq. 11,
-$P = Q_{in}\,\rho\,H/\eta$.
+source-pipe flow), Eq. (3-left) is a cubic in $\phi$; its physically valid root yields the speed
+$\omega = Q_{in}/\phi$, and Eq. (3-right) gives the efficiency. Power follows
+
+$$ P = Q_{in}\,\rho\,H/\eta. \tag{4} $$
 
 The **operating envelope** (Eq. 20 of [1]) is enforced as constraints rather than folded
 into economics:
@@ -202,16 +272,29 @@ identical physics. At the calibrated nominal operating point ($\alpha\approx1.57
 reproduces the paper's Case-1 figures (speed $\approx7.1\times10^3$ rpm, efficiency
 $\approx0.76$ vs. 7370 rpm / 73.9%).
 
+> 🖼️ **[INSERT FIGURE 2 — Compressor map and the disconnected feasible set.]** *(The single most
+> important conceptual figure — it carries the paper's key contribution.)* Left: the centrifugal
+> characteristic map ($\eta$ and $H/\omega^2$ vs $\phi=Q_{in}/\omega$, Eqs. (2)–(3)), shading the
+> infeasible surge/choke and speed regions. Right: the resulting **disconnected feasible action
+> set** $\{1\}\cup[\alpha_{\mathrm{on}}(s),2]$ on the $\alpha$ axis, with the dead band
+> $(1,\alpha_{\mathrm{on}}(s))$ marked, and an arrow showing the realization map (a command in the
+> dead band → OFF). *(Generate from `envs/compressor.py` by sweeping $\alpha$ at a representative
+> state; cf. the validation probe used in development.)*
+
 **Feasibility-aware action realization (a key enabler for DRL).** The speed/surge envelope
 implies that the compressor's *feasible operating set is disconnected*: a unit is either OFF
 ($\alpha=1$) or ON at a discharge ratio above a state-dependent minimum
 $\alpha_{\mathrm{on}}(s)$ (below which it would run under minimum speed / in surge). The band
 $\alpha\in(1,\alpha_{\mathrm{on}}(s))$ is *physically infeasible*. We therefore realize a
-commanded discharge ratio against this set: a command in the dead band is taken as the unit
-staying OFF — exactly what an operator or low-level controller would do (you do not run a
-centrifugal unit below its minimum speed). This makes the continuous action map onto the
-realizable set $\{1\}\cup[\alpha_{\mathrm{on}}(s),2]$ and is computed from the actual operating
-point, so it tracks the state. As Section 6 shows, this single modeling choice is what makes
+commanded discharge ratio against this set,
+
+$$ \tilde\alpha(s) = \begin{cases} \alpha, & \alpha \ge \alpha_{\mathrm{on}}(s) \\ 1\ (\text{OFF}),
+   & 1 < \alpha < \alpha_{\mathrm{on}}(s) \end{cases} \tag{5} $$
+
+i.e. a command in the dead band is taken as the unit staying OFF — exactly what an operator or
+low-level controller would do (you do not run a centrifugal unit below its minimum speed). This
+maps the continuous action onto the realizable set $\{1\}\cup[\alpha_{\mathrm{on}}(s),2]$ and is
+computed from the actual operating point, so it tracks the state. As Section 6 shows, this single modeling choice is what makes
 model-free DRL tractable on this problem: without it, a Gaussian policy persistently commands
 intermediate ratios that trip the envelope (≈6 violation-hours per day regardless of training
 budget); with it, the same agents reach **zero** envelope violations and near-optimal cost.
@@ -223,12 +306,16 @@ fact also improves the GA).
 Each internal node $i$ holds a mass-equivalent inventory $m_i = \beta_i p_i$ (line-pack).
 Mass balance is integrated explicitly over hourly steps,
 
-$$ m_i^{t+1} = \mathrm{clip}\big(m_i^t + \Delta t\,(\text{net flow})_i,\; m_i^{\min}, m_i^{\max}\big),
-   \quad p_i = m_i/\beta_i, $$
+$$ m_i^{t+1} = \mathrm{clip}\big(m_i^t + \Delta t\,(\mathbf{A}_{\mathrm{int}}\mathbf{q} - \mathbf{d})_i,
+   \; m_i^{\min}, m_i^{\max}\big), \quad p_i = m_i/\beta_i, \tag{6} $$
 
-coupling injection and withdrawal across the day. The economic signal is the electricity
-purchase cost $c^t = P^t\,\pi^t$ with $\pi^t$ the TOU tariff (off-peak/peak). A terminal
-line-pack target prevents end-of-day inventory depletion.
+coupling injection and withdrawal across the day ($\mathbf{d}$ is the per-node demand). The economic
+signal is the electricity purchase cost
+
+$$ c^t = P^t\,\pi^t, \tag{7} $$
+
+with $\pi^t$ the TOU tariff (off-peak/peak). A terminal line-pack target $m^\star$ prevents
+end-of-day inventory depletion.
 
 ### 3.4 Constrained MDP
 
@@ -238,20 +325,31 @@ line-pack target prevents end-of-day inventory depletion.
 - **Economic reward** $r^{\text{econ}}_t = -c^t = -P^t\pi^t$.
 - **Constraint cost** $c_t$: a weight-free, unit-normalised sum of relative violations
   (pressure band, flow limits, speed band, surge/choke band, terminal line-pack gap).
-- **Objective:** $\max \mathbb{E}\sum_t r^{\text{econ}}_t$ s.t. $\mathbb{E}\sum_t c_t \le d$,
-  with budget $d\approx 0$.
+- **Objective (CMDP):**
+
+$$ \max_{\pi}\ \mathbb{E}\Big[\textstyle\sum_t r^{\text{econ}}_t\Big] \quad \text{s.t.}\quad
+   \mathbb{E}\Big[\textstyle\sum_t c_t\Big] \le d, \qquad d\approx 0. \tag{8} $$
 
 ---
 
 ## 4. Method
 
+> 🖼️ **[INSERT FIGURE 3 — Method overview.]** A schematic of the pipeline: (a) the CMDP
+> agent–environment loop (state → policy → discharge ratio → feasibility realization Eq. (5) →
+> dynamic line-pack Eq. (6) → economic reward Eq. (7) + constraint cost); (b) Constrained-SAC with
+> the dual-ascent update Eq. (10) on $\lambda$; (c) the MPC-distillation pipeline (DP/MPC teacher →
+> DAgger relabelling → millisecond student). One column per stage.
+
 ### 4.1 Constrained (Lagrangian) SAC
 
-We optimise the Lagrangian $L = \mathbb{E}\sum_t (r^{\text{econ}}_t - \lambda\, c_t)$ with an
-off-the-shelf SAC actor–critic on the shaped reward, while the dual variable is updated by
-projected dual ascent on the episodic constraint cost,
+We optimise the Lagrangian
 
-$$ \lambda \leftarrow \mathrm{clip}\big(\lambda + \eta\,(\widehat{\textstyle\sum_t c_t} - d),\; 0,\; \lambda_{\max}\big), $$
+$$ L(\pi,\lambda) = \mathbb{E}\Big[\textstyle\sum_t \big(r^{\text{econ}}_t - \lambda\, c_t\big)\Big] \tag{9} $$
+
+with an off-the-shelf SAC actor–critic on the shaped reward $r^{\text{econ}}_t - \lambda c_t$, while
+the dual variable is updated by projected dual ascent on the episodic constraint cost,
+
+$$ \lambda \leftarrow \mathrm{clip}\big(\lambda + \eta\,(\widehat{\textstyle\sum_t c_t} - d),\; 0,\; \lambda_{\max}\big), \tag{10} $$
 
 using an EMA-smoothed episodic cost estimate $\widehat{\sum_t c_t}$ for stability. Because
 $c_t$ is unit-normalised, a *single* $\lambda$ balances economics against feasibility, and
@@ -367,7 +465,7 @@ seeds.*
 
 *(Gun-barrel results use **5 seeds**; the benchmark networks in §6.8–6.9 use 3.)*
 
-![Figure 1. Nominal 24-h electricity cost by method on the gun-barrel network (mean ± std over seeds); annotations show mean violation-hours.](../models/exports/paper/fig_cost_nominal.png)
+![Figure 4. Nominal 24-h electricity cost by method on the gun-barrel network (mean ± std over seeds); annotations show mean violation-hours.](../models/exports/paper/fig_cost_nominal.png)
 
 **Reading the table:**
 - **With feasibility secured, the model-based optimisers are near-optimal.** GA (continuous,
@@ -415,9 +513,9 @@ optimisation at all* at deployment, acting in milliseconds.) This is the genuine
 DRL value proposition for real-time / high-frequency dispatch, and here it comes *with*
 feasibility (though not yet with cost-optimality).
 
-### 6.5 Dispatch behaviour (Fig. 2)
+### 6.5 Dispatch behaviour (Fig. 5)
 
-![Figure 2. Deterministic 24-h dispatch on the gun-barrel network — Distilled-MPC, Constrained-SAC, DP-oracle and MPC. Distilled-MPC tracks DP/MPC at low cumulative cost; Constrained-SAC keeps a larger pressure margin and sits above (the from-scratch premium).](../models/exports/paper/fig_dispatch.png)
+![Figure 5. Deterministic 24-h dispatch on the gun-barrel network — Distilled-MPC, Constrained-SAC, DP-oracle and MPC. Distilled-MPC tracks DP/MPC at low cumulative cost; Constrained-SAC keeps a larger pressure margin and sits above (the from-scratch premium).](../models/exports/paper/fig_dispatch.png)
 
 
 The 24-h curves (Distilled-MPC, Constrained-SAC, DP-oracle, MPC) show all four reproducing the
@@ -428,9 +526,9 @@ is the clearest summary: **Distilled-MPC tracks DP/MPC almost exactly (all ≈5)
 Constrained-SAC keeps a larger pressure margin and so sits well above (≈13, the from-scratch cost
 premium) on the same qualitative shape.
 
-### 6.6 Robustness (Fig. 3)
+### 6.6 Robustness (Fig. 6)
 
-![Figure 3. Cost (mean ± std) under perturbed demand/price on the gun-barrel network; annotations show mean violation-hours.](../models/exports/paper/fig_robustness.png)
+![Figure 6. Cost (mean ± std) under perturbed demand/price on the gun-barrel network; annotations show mean violation-hours.](../models/exports/paper/fig_robustness.png)
 
 
 Under perturbed demand/price, the from-scratch DRL agents are the **most feasible**: SAC averages
@@ -531,9 +629,9 @@ alongside the terminal-inventory gap.
   re-tuning them for the larger network is left to future work. We report this honestly: the
   *ranking among DRL agents is network-dependent*, even though feasibility itself is robust.
 
-![Figure 4. Branched benchmark — nominal cost by method (left) and 24-h dispatch curves (right). The feasibility-aware DRL agents stay in-band; SAC is cost-competitive with the GA optimum.](../models/exports/paper_branched/fig_cost_nominal.png)
+![Figure 7. Branched benchmark — nominal cost by method (left) and 24-h dispatch curves (right). The feasibility-aware DRL agents stay in-band; SAC is cost-competitive with the GA optimum.](../models/exports/paper_branched/fig_cost_nominal.png)
 
-![Figure 5. Branched benchmark — robustness (cost mean ± std and violation-hours) under perturbed demand/price.](../models/exports/paper_branched/fig_robustness.png)
+![Figure 8. Branched benchmark — robustness (cost mean ± std and violation-hours) under perturbed demand/price.](../models/exports/paper_branched/fig_robustness.png)
 
 Net: the methodological contributions — the feasibility-aware action realisation, feasible
 from-scratch DRL, and MPC distillation — all transfer to the larger, parameter-realistic network;
@@ -583,7 +681,7 @@ GasLib is a gas-only library with no electricity dimension.
 Across all three networks the conclusion is consistent: feasibility transfers, distillation delivers
 near-optimal feasible control at millisecond latency, and from-scratch RL trails on cost.
 
-![Figure 6. GasLib-40-derived network — nominal cost by method (left) and 24-h dispatch (right).](../models/exports/paper_gaslib/fig_cost_nominal.png)
+![Figure 9. GasLib-40-derived network — nominal cost by method (left) and 24-h dispatch (right).](../models/exports/paper_gaslib/fig_cost_nominal.png)
 
 ---
 
@@ -669,22 +767,154 @@ near-optimality — and the limits of learned control for this problem.
 
 ## References
 
-[1] Z. E. Liu et al., "A novel optimization framework for natural gas transportation
-pipeline networks based on deep reinforcement learning," *Energy and AI*, 18:100434, 2024.
+> **Note to authors.** The list below is organised by theme and uses standard, well-known sources;
+> bibliographic details (volume/pages/DOI) should be verified against the publisher of record before
+> submission, and a few domain-specific entries [15,16,19,20] confirmed against the exact venue.
 
-[2] Chen et al., "A deep reinforcement learning-based method for predictive management of
-demand response in natural gas pipeline networks," *Journal of Cleaner Production*, 2021.
+*Gas-network DRL (this work's basis)*
 
-[3] N. Keyaerts et al., "Line-pack storage valuation under price uncertainty," *Energy*, 2013.
+[1] Z. E. Liu, W. Long, Z. Chen, et al., "A novel optimization framework for natural gas
+transportation pipeline networks based on deep reinforcement learning," *Energy and AI*, 18:100434,
+2024.
 
-[4] Operation of natural gas and electricity networks with line pack, *Journal of Modern
-Power Systems and Clean Energy*, 2019.
+*Model-based gas network optimisation*
 
-[5] Integrated Electricity–Gas System Optimal Dispatch Based on Deep Reinforcement Learning,
-IEEE, 2022.
+[2] R. Z. Ríos-Mercado and C. Borraz-Sánchez, "Optimization problems in natural gas transportation
+systems: A state-of-the-art review," *Applied Energy*, 147:536–555, 2015.
 
-[6] Soft actor–critic DRL for interval optimal dispatch of integrated energy systems with
-uncertainty in demand response and renewable energy, *Engineering Applications of AI*, 2023.
+[3] T. Koch, B. Hiller, M. E. Pfetsch, and L. Schewe (eds.), *Evaluating Gas Network Capacities*,
+SIAM, 2015.
 
-*(Reference list to be completed with full bibliographic details and an expanded survey for
-submission.)*
+[4] M. E. Pfetsch, A. Fügenschuh, B. Geißler, et al., "Validation of nominations in gas network
+optimization: models, methods, and solutions," *Optimization Methods and Software*, 30(1):15–53,
+2015.
+
+[5] M. Schmidt, D. Aßmann, R. Burlacu, et al., "GasLib—A library of gas network instances,"
+*Data*, 2(4):40, 2017.
+
+[6] P. J. Wong and R. E. Larson, "Optimization of natural-gas pipeline systems via dynamic
+programming," *IEEE Transactions on Automatic Control*, 13(5):475–481, 1968.
+
+[7] A. Zlotnik, M. Chertkov, and S. Backhaus, "Optimal control of transient flow in natural gas
+networks," *IEEE Conf. on Decision and Control (CDC)*, 4563–4570, 2015.
+
+[8] T. W. K. Mak, P. Van Hentenryck, A. Zlotnik, and R. Bent, "Dynamic compressor optimization in
+natural gas pipeline systems," *INFORMS Journal on Computing*, 31(1):40–65, 2019.
+
+[9] A. J. Osiadacz, *Simulation and Analysis of Gas Networks*, Gulf Publishing, 1987.
+
+*Line-pack flexibility and gas–power coupling*
+
+[10] K. Keyaerts, M. Hallack, J.-M. Glachant, and W. D'haeseleer, "Gas market distorting effects of
+imbalanced gas balancing rules: Inefficient regulation of pipeline flexibility," *Energy Policy*,
+39(2):865–876, 2011.
+
+[11] B. A. Clegg and P. Mancarella, "Integrated electrical and gas network flexibility assessment
+in low-carbon multi-energy systems," *IEEE Transactions on Sustainable Energy*, 7(2):718–731, 2016.
+
+[12] C. M. Correa-Posada and P. Sánchez-Martín, "Integrated power and natural gas model for energy
+adequacy in short-term operation," *IEEE Transactions on Power Systems*, 30(6):3347–3355, 2015.
+
+[13] A. Zlotnik, L. Roald, S. Backhaus, M. Chertkov, and G. Andersson, "Coordinated scheduling for
+interdependent electric power and natural gas infrastructures," *IEEE Transactions on Power
+Systems*, 32(1):600–610, 2017.
+
+[14] C. Wang, W. Wei, J. Wang, et al., "Convex optimization based adjustable robust dispatch of
+integrated electricity–gas systems with line-pack," *Journal of Modern Power Systems and Clean
+Energy*, 2019.
+
+*DRL for gas and energy systems*
+
+[15] L. Chen et al., "A deep reinforcement learning-based method for predictive management of
+demand response in natural gas pipeline networks," *Journal of Cleaner Production*, 332:130093, 2021.
+
+[16] Authors, "Optimization of start-up strategies of gas injection compressor in underground gas
+storage using deep reinforcement learning," *Simulation Modelling Practice and Theory*, 2025.
+
+[17] J. R. Vázquez-Canteli and Z. Nagy, "Reinforcement learning for demand response: A review of
+algorithms and modeling techniques," *Applied Energy*, 235:1072–1089, 2019.
+
+[18] A. T. D. Perera and P. Kamalaruban, "Applications of reinforcement learning in energy
+systems," *Renewable and Sustainable Energy Reviews*, 137:110618, 2021.
+
+[19] Authors, "Soft actor–critic deep reinforcement learning for interval optimal dispatch of
+integrated energy systems with uncertainty in demand response and renewable energy," *Engineering
+Applications of Artificial Intelligence*, 2023.
+
+[20] Authors, "Integrated electricity–gas system optimal dispatch based on deep reinforcement
+learning," *IEEE Conf. Proc.*, 2022.
+
+[21] Z. Wan, H. Li, H. He, and D. Prokhorov, "Model-free real-time EV charging scheduling based on
+deep reinforcement learning," *IEEE Transactions on Smart Grid*, 10(5):5246–5257, 2019.
+
+[22] E. Mocanu, D. C. Mocanu, P. H. Nguyen, et al., "On-line building energy optimization using
+deep reinforcement learning," *IEEE Transactions on Smart Grid*, 10(4):3698–3708, 2019.
+
+*Reinforcement-learning algorithms*
+
+[23] R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, 2nd ed., MIT Press,
+2018.
+
+[24] V. Mnih, K. Kavukcuoglu, D. Silver, et al., "Human-level control through deep reinforcement
+learning," *Nature*, 518(7540):529–533, 2015.
+
+[25] T. P. Lillicrap, J. J. Hunt, A. Pritzel, et al., "Continuous control with deep reinforcement
+learning," *International Conference on Learning Representations (ICLR)*, 2016.
+
+[26] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov, "Proximal policy optimization
+algorithms," *arXiv:1707.06347*, 2017.
+
+[27] T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine, "Soft actor-critic: Off-policy maximum entropy
+deep reinforcement learning with a stochastic actor," *International Conference on Machine Learning
+(ICML)*, 1861–1870, 2018.
+
+[28] S. Fujimoto, H. van Hoof, and D. Meger, "Addressing function approximation error in
+actor-critic methods," *ICML*, 1587–1596, 2018.
+
+[29] A. Raffin, A. Hill, A. Gleave, et al., "Stable-Baselines3: Reliable reinforcement learning
+implementations," *Journal of Machine Learning Research*, 22(268):1–8, 2021.
+
+*Safe and constrained RL*
+
+[30] E. Altman, *Constrained Markov Decision Processes*, Chapman & Hall/CRC, 1999.
+
+[31] J. García and F. Fernández, "A comprehensive survey on safe reinforcement learning," *Journal
+of Machine Learning Research*, 16(1):1437–1480, 2015.
+
+[32] J. Achiam, D. Held, A. Tamar, and P. Abbeel, "Constrained policy optimization," *ICML*, 22–31,
+2017.
+
+[33] C. Tessler, D. J. Mankowitz, and S. Mannor, "Reward constrained policy optimization," *ICLR*,
+2019.
+
+[34] A. Stooke, J. Achiam, and P. Abbeel, "Responsive safety in reinforcement learning by PID
+Lagrangian methods," *ICML*, 9133–9143, 2020.
+
+[35] G. Dalal, K. Dvijotham, M. Vecerik, et al., "Safe exploration in continuous action spaces,"
+*arXiv:1801.08757*, 2018.
+
+[36] A. Ray, J. Achiam, and D. Amodei, "Benchmarking safe exploration in deep reinforcement
+learning," *OpenAI Technical Report*, 2019.
+
+[37] Y. Chow, O. Nachum, E. Duenez-Guzman, and M. Ghavamzadeh, "A Lyapunov-based approach to safe
+reinforcement learning," *Advances in Neural Information Processing Systems (NeurIPS)*, 2018.
+
+*Imitation learning and policy distillation*
+
+[38] S. Ross, G. J. Gordon, and J. A. Bagnell, "A reduction of imitation learning and structured
+prediction to no-regret online learning," *AISTATS*, 627–635, 2011.
+
+[39] A. A. Rusu, S. G. Colmenarejo, Ç. Gülçehre, et al., "Policy distillation," *ICLR*, 2016.
+
+[40] J. Ho and S. Ermon, "Generative adversarial imitation learning," *NeurIPS*, 2016.
+
+[41] A. Hussein, M. M. Gaber, E. Elyan, and C. Jayne, "Imitation learning: A survey of learning
+methods," *ACM Computing Surveys*, 50(2):1–35, 2017.
+
+*Model predictive control*
+
+[42] J. B. Rawlings, D. Q. Mayne, and M. M. Diehl, *Model Predictive Control: Theory, Computation,
+and Design*, 2nd ed., Nob Hill Publishing, 2017.
+
+[43] S. Gopalakrishnan and L. T. Biegler, "Economic nonlinear model predictive control for periodic
+optimal operation of gas pipeline networks," *Computers & Chemical Engineering*, 52:90–99, 2013.
