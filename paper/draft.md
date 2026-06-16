@@ -217,11 +217,7 @@ with a DP/MPC benchmark — has not been reported.
 
 ### 3.1 Network and hydraulics
 
-> 🖼️ **[INSERT FIGURE 1 — System schematic.]** A 3-panel schematic of the test networks: (a) the
-> gun-barrel element (source compressor → node 2 → demand node 3); (b) the branched benchmark
-> (junction splitting to two demand nodes); (c) the GasLib-40-derived chain (innode_6 → sink_13 →
-> sink_14 → sink_10). Annotate the source compressor, pipes ($K_e$), node line-pack ($\beta_i$),
-> and demand nodes. *(Suggested: draw from the incidence matrices in `envs/pipeline_env.py`.)*
+![Figure 1. The three test networks: (a) gun-barrel element, (b) branched benchmark, (c) GasLib-40-derived demand chain (pipe lengths shown). S = source node with the electric compressor (α); shaded = demand node.](fig1_networks.png)
 
 We consider a gun-barrel element: a source node, an internal node (2), and a demand node
 (3), connected by two pipes; an electric compressor at the source sets the source pressure
@@ -272,14 +268,7 @@ identical physics. At the calibrated nominal operating point ($\alpha\approx1.57
 reproduces the paper's Case-1 figures (speed $\approx7.1\times10^3$ rpm, efficiency
 $\approx0.76$ vs. 7370 rpm / 73.9%).
 
-> 🖼️ **[INSERT FIGURE 2 — Compressor map and the disconnected feasible set.]** *(The single most
-> important conceptual figure — it carries the paper's key contribution.)* Left: the centrifugal
-> characteristic map ($\eta$ and $H/\omega^2$ vs $\phi=Q_{in}/\omega$, Eqs. (2)–(3)), shading the
-> infeasible surge/choke and speed regions. Right: the resulting **disconnected feasible action
-> set** $\{1\}\cup[\alpha_{\mathrm{on}}(s),2]$ on the $\alpha$ axis, with the dead band
-> $(1,\alpha_{\mathrm{on}}(s))$ marked, and an arrow showing the realization map (a command in the
-> dead band → OFF). *(Generate from `envs/compressor.py` by sweeping $\alpha$ at a representative
-> state; cf. the validation probe used in development.)*
+![Figure 2. Compressor feasible set. (a) Efficiency characteristic η(φ) with the feasible surge/choke band [φ_lo, φ_hi] shaded; (b) the realized discharge ratio (Eq. 5): a command in the sub-minimum-speed dead band (1, α_on≈1.29) is realized as unit-off, giving the disconnected feasible set {1}∪[α_on, 2]. Computed from envs/compressor.py at p₂=100.](fig2_compressor.png)
 
 **Feasibility-aware action realization (a key enabler for DRL).** The speed/surge envelope
 implies that the compressor's *feasible operating set is disconnected*: a unit is either OFF
@@ -334,11 +323,7 @@ $$ \max_{\pi}\ \mathbb{E}\Big[\textstyle\sum_t r^{\text{econ}}_t\Big] \quad \tex
 
 ## 4. Method
 
-> 🖼️ **[INSERT FIGURE 3 — Method overview.]** A schematic of the pipeline: (a) the CMDP
-> agent–environment loop (state → policy → discharge ratio → feasibility realization Eq. (5) →
-> dynamic line-pack Eq. (6) → economic reward Eq. (7) + constraint cost); (b) Constrained-SAC with
-> the dual-ascent update Eq. (10) on $\lambda$; (c) the MPC-distillation pipeline (DP/MPC teacher →
-> DAgger relabelling → millisecond student). One column per stage.
+![Figure 3. Method overview: (a) the dynamic CMDP environment loop (state → policy → discharge ratio → feasibility realization Eq. 5 → Weymouth flow + line-pack Eq. 6 → economic reward Eq. 7 and constraint cost); (b) Constrained-SAC optimizing r_econ − λc with dual ascent on λ (Eqs. 9–10); (c) the MPC-distillation pipeline (DP/MPC teacher → DAgger → millisecond student policy).](fig3_method.png)
 
 ### 4.1 Constrained (Lagrangian) SAC
 
