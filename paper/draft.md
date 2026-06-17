@@ -542,6 +542,8 @@ measure the effect on the true 24-h cost, violation-hours, and terminal line-pac
 | − surge/choke penalty weight | 13.69 ± 2.2 | 0.0 | 23 |
 | − terminal-line-pack penalty weight | 13.69 ± 2.2 | 0.0 | 23 |
 
+![Figure 7. Ablation on the gun-barrel network (Constrained-SAC, mean ± std over seeds). (a) 24-h cost with terminal-gap annotated; (b) constraint-violation hours. Removing the feasibility realization (red) breaks feasibility and doubles cost; removing the soft margin (green) recovers near-optimal cost at zero violations; zeroing the surge/terminal penalty weights has no effect (Constrained-SAC uses the unified constraint cost).](fig_ablation.png)
+
 Three clear conclusions:
 - **The feasibility-aware action realisation is the enabler.** Removing it brings violations back
   (0 → 6 h/day), doubles the cost (13.7 → 30.3) and wrecks terminal inventory (gap 23 → 2402) — a
@@ -614,9 +616,9 @@ alongside the terminal-inventory gap.
   re-tuning them for the larger network is left to future work. We report this honestly: the
   *ranking among DRL agents is network-dependent*, even though feasibility itself is robust.
 
-![Figure 7. Branched benchmark — nominal cost by method (left) and 24-h dispatch curves (right). The feasibility-aware DRL agents stay in-band; SAC is cost-competitive with the GA optimum.](../models/exports/paper_branched/fig_cost_nominal.png)
+![Figure 8. Branched benchmark — nominal 24-h cost by method (mean ± std). The feasibility-aware DRL agents stay in-band; SAC is cost-competitive with the GA optimum.](../models/exports/paper_branched/fig_cost_nominal.png)
 
-![Figure 8. Branched benchmark — robustness (cost mean ± std and violation-hours) under perturbed demand/price.](../models/exports/paper_branched/fig_robustness.png)
+![Figure 9. Branched benchmark — robustness (cost mean ± std and violation-hours) under perturbed demand/price.](../models/exports/paper_branched/fig_robustness.png)
 
 Net: the methodological contributions — the feasibility-aware action realisation, feasible
 from-scratch DRL, and MPC distillation — all transfer to the larger, parameter-realistic network;
@@ -666,7 +668,24 @@ GasLib is a gas-only library with no electricity dimension.
 Across all three networks the conclusion is consistent: feasibility transfers, distillation delivers
 near-optimal feasible control at millisecond latency, and from-scratch RL trails on cost.
 
-![Figure 9. GasLib-40-derived network — nominal cost by method (left) and 24-h dispatch (right).](../models/exports/paper_gaslib/fig_cost_nominal.png)
+![Figure 10. GasLib-40-derived network — nominal 24-h cost by method (mean ± std).](../models/exports/paper_gaslib/fig_cost_nominal.png)
+
+### 6.10 Summary: cost–latency trade-off and cross-network consistency
+
+Two summary views consolidate the story. Figure 11 plots **cost against deployment latency** on the
+gun-barrel network: the model-based optimisers (DP/MPC/GA) sit at low cost but high latency
+(1–11 s), the from-scratch DRL agents are fast (~5 ms) but pay a cost premium, and **Distilled-MPC
+occupies the ideal lower-left corner** — the lowest cost *and* millisecond latency. Figure 12
+normalises each method's cost by the per-network DP optimum across all three networks: GA, MPC and
+Distilled-MPC stay at ≈1× everywhere, while from-scratch SAC/Constrained-SAC carry a consistent
+≈2–3× premium (the one exception being SAC on the branched network, where the coarse 3-D grid DP
+reference is itself loose). The two figures together capture the paper's thesis: *distillation gives
+near-optimal cost at real-time latency, consistently across networks; from-scratch RL is fast and
+feasible but cost-suboptimal.*
+
+![Figure 11. Cost vs deployment latency on the gun-barrel network (latency on a log scale; green = feasible, red = infeasible; ★ = Distilled-MPC). Lower-left is better — cheaper and faster.](fig_cost_latency.png)
+
+![Figure 12. Nominal cost normalised by the per-network DP optimum (×1 dashed line), for the key methods across the gun-barrel, branched, and GasLib-40 networks. Distilled-MPC ≈ optimum everywhere; from-scratch SAC/Constrained-SAC carry a premium.](fig_summary_networks.png)
 
 ---
 
