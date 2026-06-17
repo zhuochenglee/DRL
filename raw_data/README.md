@@ -22,7 +22,9 @@ raw_data/
 ├── sensitivity_w_penalty.csv      # terminal-line-pack penalty-weight sweep (SAC)
 ├── fig2_eta_curve.csv             # Figure 2(a) data: phi, eta(phi), H/omega^2 (compressor map)
 ├── fig2_alpha_realization.csv     # Figure 2(b) data: commanded->realized alpha + full operating point
-└── fig2_constants.csv             # Figure 2 scalars: alpha_on, phi/omega/Qin bounds, polynomials
+├── fig2_constants.csv             # Figure 2 scalars: alpha_on, phi/omega/Qin bounds, polynomials
+├── fig2a_prism.csv                # Prism-ready: eta curve split into surge/feasible/choke columns
+└── fig2b_prism.csv                # Prism-ready: realized alpha split into OFF/ON + identity
 ```
 
 ## `results_raw.csv` schema (one row per evaluation)
