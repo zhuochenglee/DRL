@@ -33,10 +33,12 @@ neutral `#4d4d4d/#8c8c8c/#c2c2c2`; Distilled-MPC `#2c6fbb` (blue); Constrained-S
 infeasible/bad `#c44e58` (red); feasible `#3aaa64` (green). 7 pt, editable text
 (`svg.fonttype=none`, `pdf.fonttype=42`), no top/right spines, export svg+pdf+tiff(600)+png.
 
+## Nature-style figures — ALL DONE
+- `fig2_nature.py`..`fig5_nature.py` (individual) + `figs_nature_rest.py` (Figs 1,6,7,8,9,10,11,12).
+- Every figure now has `figN_nature.{svg,pdf,png,tiff}` in `paper/`. Palette consistent.
+
 ## TODO (next session)
-1. (optional) Nature-style versions of remaining figs: Fig 1 (networks), 6 (robustness), 7 (ablation),
-   8/9 (branched), 10 (gaslib), 11 (Pareto), 12 (cross-network) — reuse the palette above.
-2. Swap the finished `figN_nature.png` into `draft.md`/`draft_zh.md` (replace the matplotlib
+1. Swap the finished `figN_nature.png` into `draft.md`/`draft_zh.md` (replace the matplotlib
    embeds), update captions (drafts above have suggested captions in chat), regenerate both docx,
    commit.
 3. Remaining paper gaps: verify domain refs [15,16,19,20]; the TOU price stays synthetic (GasLib is
