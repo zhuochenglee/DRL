@@ -146,11 +146,14 @@ def fig_method():
 
 	# Stage C: distillation
 	ax.text(10.8, 5.7, "(c) MPC distillation", ha="center", fontsize=9, weight="bold")
-	box(9.5, 3.6, 2.4, 0.9, "MPC / DP teacher\n(feedback law)", "#fff3d6")
+	box(9.5, 3.6, 2.4, 0.9, "MPC / DP teacher\n(feedback law from\nthe env model)", "#fff3d6")
 	box(9.5, 2.3, 2.4, 0.8, "DAgger relabel\nvisited states", "#fde9d6")
 	box(9.5, 1.0, 2.4, 0.9, "millisecond MLP\nstudent policy", "#dfeafc")
 	arrow((10.7, 3.6), (10.7, 3.1)); arrow((10.7, 2.3), (10.7, 1.9))
-	arrow((8.9, 3.9), (9.5, 4.0))  # env -> teacher (model)
+	# (b) and (c) are parallel methods on the same env -- no SAC->teacher arrow (the teacher
+	# is the DP/MPC feedback law built from the env model, independent of the constrained SAC).
+	ax.text(6.0, 0.45, "(a) is the shared environment; (b) and (c) are two independent solution methods on it",
+	        fontsize=7.5, style="italic", color="#555")
 
 	fig.suptitle("Method overview: a physics-faithful CMDP solved by constraint-aware SAC, with an MPC controller distilled into a fast policy",
 	             fontsize=9.5, y=1.0)
