@@ -70,8 +70,9 @@ def cost_bar(net, stem, kind="nominal", ylim=None, title=""):
         if v >= 0.5:
             ax.text(xi, mu + s + (ylim[1] if ylim else max(mean)) * 0.03, f"{v:.0f}h" if v >= 1 else f"{v:.1f}h",
                     ha="center", va="bottom", fontsize=5.6, color=BAD)
-        if mu < 0.3:  # degenerate "never compress"
-            ax.text(xi, 0.3, "deg.", ha="center", va="bottom", fontsize=5.4, color=GREY, rotation=90)
+        if mu < 0.3:  # degenerate: never compresses -> 0 electricity cost but depletes line-pack
+            ax.text(xi, 0.6, "never compresses (degenerate)", ha="center", va="bottom",
+                    fontsize=5.2, color=GREY, rotation=90)
     ax.set_xticks(list(x)); ax.set_xticklabels(methods, rotation=35, ha="right")
     ax.set_ylabel(("robust " if kind != "nominal" else "") + "24-h electricity cost (a.u.)")
     if ylim:
