@@ -111,24 +111,16 @@ def ablation(stem):
 
 # ── cost vs latency Pareto (Fig 11) ──────────────────────────────────────────
 def pareto(stem):
-    S = summary("gunbarrel"); L = latency_ms("gunbarrel")
-    fig, ax = plt.subplots(figsize=(4.8, 3.1))
-    for m in ORDER:
-        c = float(S[m]["nominal_cost_mean"]); lat = L[m]; v = float(S[m]["nominal_viol"])
-        col = GREEN if v < 0.5 else BAD
-        mk = "*" if m == "Distilled-MPC" else ("s" if m in ("DP-oracle", "MPC", "GA") else "o")
-        ax.scatter(lat, c, s=200 if mk == "*" else 70, c=col, marker=mk, edgecolor="black", lw=0.5, zorder=3)
-        yo = {"MPC": -1.0, "DP-oracle": 0.5, "Distilled-MPC": 0.6}.get(m, 0.5)
-        xf = {"GA": 0.5}.get(m, 1.13)
-        ax.annotate(m, (lat, c), xytext=(lat * xf, c + yo), fontsize=6)
-    ax.set_xscale("log"); ax.set_xlabel("deployment latency per 24-h dispatch (ms, log)")
-    ax.set_ylabel("nominal 24-h cost (a.u.)")
-    ax.annotate("ideal", (3.0, 5.4), fontsize=7, color=BLUE, fontweight="bold")
-    ax.tick_params(width=0.8, length=3)
-    handles = [Patch(fc=GREEN, ec="black", lw=0.5, label="feasible (≈0 viol)"),
-               Patch(fc=BAD, ec="black", lw=0.5, label="infeasible")]
-    ax.legend(handles=handles, loc="upper right", fontsize=6)
-    save(fig, stem)
+    """Generate Fig. 11 via the dedicated, final Nature-style script.
+
+    Keeping the implementation in fig11_nature.py avoids two versions of the
+    same redesigned Pareto map drifting apart when all figures are regenerated.
+    """
+    import fig11_nature
+
+    if stem != "fig11_nature":
+        raise ValueError("Fig. 11 generator writes the fixed fig11_nature.* outputs")
+    fig11_nature.main()
 
 
 # ── cross-network summary (Fig 12) ───────────────────────────────────────────
