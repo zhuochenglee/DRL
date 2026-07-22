@@ -73,12 +73,12 @@ class EpisodeStatsCallback(BaseCallback):
 			if info.get("violation", False):
 				self._violations += 1
 			if done and self._cost:
-				self.logger.record("episode/total_cost",      float(sum(self._cost)))
-				self.logger.record("episode/violation_hours", float(self._violations))
-				self.logger.record("episode/mean_alpha",      float(np.mean(self._alpha)))
-				self.logger.record("episode/mean_p2_bar",     float(np.mean(self._p2)))
-				self.logger.record("episode/mean_p3_bar",     float(np.mean(self._p3)))
-				self.logger.record("episode/mean_linepack",   float(np.mean(self._linepack)))
+				self.logger.record("sac/episode/total_cost",      float(sum(self._cost)))
+				self.logger.record("sac/episode/violation_hours", float(self._violations))
+				self.logger.record("sac/episode/mean_alpha",      float(np.mean(self._alpha)))
+				self.logger.record("sac/episode/mean_p2_bar",     float(np.mean(self._p2)))
+				self.logger.record("sac/episode/mean_p3_bar",     float(np.mean(self._p3)))
+				self.logger.record("sac/episode/mean_linepack",   float(np.mean(self._linepack)))
 				self.logger.dump(self.num_timesteps)
 				self._reset_buffers()
 		return True
@@ -150,7 +150,7 @@ class CurveLoggingCallback(BaseCallback):
 				writer = fmt.writer
 				break
 		if writer is not None:
-			writer.add_figure("eval/24h_curves", fig, self._eval_count)
+			writer.add_figure("sac/eval/24h_curves", fig, self._eval_count)
 
 		plt.close(fig)
 		self._eval_count += 1
@@ -213,6 +213,6 @@ if __name__ == "__main__":
 		EpisodeStatsCallback(),
 		CurveLoggingCallback(eval_env=eval_env, eval_freq=20000),
 	])
-	model.learn(total_timesteps=total_timesteps, callback=callback, tb_log_name="sac_papercode")
+	model.learn(total_timesteps=total_timesteps, callback=callback, tb_log_name="sac")
 
 	run_deterministic_day(env, model)
